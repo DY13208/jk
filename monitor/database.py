@@ -20,6 +20,14 @@ def now(): return datetime.now(timezone.utc).isoformat()
 def encode(value): return json.dumps(value, ensure_ascii=False)
 
 
+def run_summary(conn, run_id):
+    """Counts for the email summary line: products in the run and change events it produced."""
+    if not run_id: return None
+    total = conn.execute('SELECT COUNT(*) FROM monitor_details WHERE run_id=?', (run_id,)).fetchone()[0]
+    changes = conn.execute('SELECT COUNT(*) FROM monitor_events WHERE run_id=?', (run_id,)).fetchone()[0]
+    return {'total': total, 'changes': changes}
+
+
 def protect_file(path):
     try:
         os.chmod(path, 0o600)
@@ -97,6 +105,9 @@ class Database:
                     id INTEGER PRIMARY KEY,site_id TEXT,started TEXT NOT NULL,ended TEXT,status TEXT NOT NULL,
                     message TEXT NOT NULL DEFAULT '',run_id INTEGER REFERENCES runs(run_id));
                 CREATE TABLE IF NOT EXISTS monitor_leases(site_id TEXT PRIMARY KEY,owner TEXT,expires REAL);
+                CREATE TABLE IF NOT EXISTS monitor_mail_tests(
+                    id INTEGER PRIMARY KEY,site_id TEXT NOT NULL,recipients TEXT NOT NULL,status TEXT NOT NULL,
+                    created TEXT NOT NULL,claimed_at REAL,finished TEXT,last_error TEXT NOT NULL DEFAULT '');
             ''')
             columns = {r['name'] for r in db.execute('PRAGMA table_info(monitor_sites)')}
             for column, definition in [('notification_channel', "TEXT NOT NULL DEFAULT 'wecom'"), ('email_to', "TEXT NOT NULL DEFAULT ''")]:
@@ -133,7 +144,8 @@ class Database:
         ids = [str(p.get('product_id') or '') for p in products]
         count = meta.get('site_pages')
         # Legacy documents predate the complete flag; their page evidence is mandatory.
-        if meta.get('complete') is False or not isinstance(count, int) or count < 1:
+        if (meta.get('complete') is False or (not legacy and meta.get('complete') is not True)
+            or not isinstance(count, int) or count < 1):
             raise CollectionError('快照没有分页完整性证明')
         if (len(pages) != count or [p.get('page') for p in pages] != list(range(1, count + 1))
             or any((p.get('status') != 200 and not (legacy and p.get('page')==1 and p.get('status')==303 and p.get('success') is True))
@@ -156,7 +168,14 @@ class Database:
         for key in ('adapter_config', 'event_rules'): site[key] = json.loads(site[key])
         for key in ('enabled', 'permission_confirmed', 'notify_enabled'): site[key] = bool(site[key])
         site['webhook_configured'] = bool(site['webhook_env'] and os.getenv(site['webhook_env']))
-        site['email_configured'] = bool(os.getenv('SMTP_HOST') and os.getenv('SMTP_FROM') and site['email_to'])
+        from .email_delivery import configuration
+        try:
+            configuration(site)
+            site['email_configured'] = True
+        except ValueError:
+            site['email_configured'] = False
+        # Agent Mail readiness also depends on the host worker; the admin UI combines both.
+        site['agentmail_configured'] = bool(site['email_to'])
         return site
 
     def sites(self):
@@ -180,7 +199,8 @@ class Database:
                 adapter=excluded.adapter,interval_minutes=excluded.interval_minutes,enabled=excluded.enabled,
                 permission_confirmed=excluded.permission_confirmed,policy_note=excluded.policy_note,
                 adapter_config=excluded.adapter_config,event_rules=excluded.event_rules,notify_enabled=excluded.notify_enabled,
-                webhook_env=excluded.webhook_env,notification_channel=excluded.notification_channel,email_to=excluded.email_to,paused_reason='' ''',
+                webhook_env=excluded.webhook_env,notification_channel=excluded.notification_channel,email_to=excluded.email_to,
+                paused_reason=CASE WHEN excluded.enabled=1 THEN '' ELSE monitor_sites.paused_reason END ''',
                 (site['id'],site['name'],site['url'],site['adapter'],site['interval_minutes'],int(site['enabled']),
                  int(site['permission_confirmed']),site['policy_note'],encode(site['adapter_config']),
                  encode(site['event_rules']),int(site['notify_enabled']),site['webhook_env'],now(),
@@ -278,6 +298,9 @@ class Database:
         with self.connect() as db:
             counts = {s['id']:len(self.products(s['id'])) for s in sites}
             runs = db.execute('SELECT COUNT(*) FROM monitor_run_meta WHERE complete=1').fetchone()[0]
-            pending = db.execute("SELECT COUNT(*) FROM monitor_outbox WHERE status!='sent'").fetchone()[0]
+            statuses = dict(db.execute('SELECT status,COUNT(*) FROM monitor_outbox GROUP BY status').fetchall())
+            pending = statuses.get('pending',0) + statuses.get('sending',0)
             events = db.execute('SELECT COUNT(*) FROM monitor_events').fetchone()[0]
-        return {'sites':sites,'product_counts':counts,'successful_runs':runs,'events':events,'pending_notifications':pending}
+        return {'sites':sites,'product_counts':counts,'successful_runs':runs,'events':events,
+                'pending_notifications':pending,'notification_counts':statuses,
+                'attention_notifications':statuses.get('held',0)+statuses.get('uncertain',0)}

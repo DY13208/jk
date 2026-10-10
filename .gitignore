@@ -1,9 +1,13 @@
 vendor/
+!admin/vendor/
+!admin/vendor/**
 data/
 .env
 __pycache__/
 .pytest_cache/
 target.html
+target-recheck.html
 .venv/
 dist/
 release.json
+.ui-vendor/

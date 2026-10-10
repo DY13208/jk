@@ -4,3 +4,7 @@ The feasibility scripts supplied by the user are preserved in legacy/*.original.
 run_crawl4ai.py was adapted for configurable traversal and fail-closed browser policy.
 diff_sqlite.py was extended with portable paths and transactional integration options.
 APScheduler, FastAPI, SQLite, BeautifulSoup, HTTPX and Playwright provide the runtime infrastructure.
+
+UI: Tabler Core 1.6.1 (MIT), Copyright 2018-2026 The Tabler Authors / codecalm.net Pawel Kuna.
+Tabler Icons 3.49.0 (MIT), Copyright 2020-2026 Pawel Kuna.
+Full notices retained under admin/vendor/tabler/.

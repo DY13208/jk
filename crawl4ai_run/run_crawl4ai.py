@@ -26,6 +26,8 @@ schema = {
         {'name': 'discount', 'selector': '.tp-discount-percentage', 'type': 'text'},
         {'name': 'brand', 'selector': '[itemprop=brand]', 'type': 'attribute', 'attribute': 'content'},
         {'name': 'label', 'selector': '.tp-product-label span', 'type': 'text'},
+        # Optional: Odoo product image for email thumbnails; missing images never fail a crawl.
+        {'name': 'image', 'selector': 'img[src*="/web/image/"]', 'type': 'attribute', 'attribute': 'src'},
     ],
 }
 
@@ -64,7 +66,23 @@ def clean(p, page, base=BASE, *, odoo=True, decimal_separator='auto'):
         'original_price': money(p.get('original_price'), decimal_separator),
         'currency': (p.get('currency') or '').strip(), 'discount': (p.get('discount') or '').strip() or None,
         'label': (p.get('label') or '').strip() or None, 'url': canon, 'listing_page': page,
-        'sku': p.get('sku'), 'stock': p.get('stock') or 'UNKNOWN'}
+        'sku': p.get('sku'), 'stock': p.get('stock') or 'UNKNOWN',
+        'image': image_url(p.get('image'), base) or (odoo_image(base, pid) if odoo else None)}
+
+
+def odoo_image(base, pid):
+    """Odoo's standard public thumbnail for a product template (used only as an email image)."""
+    if not str(pid or '').isdigit(): return None
+    parts = urlsplit(base)
+    return f'{parts.scheme}://{parts.netloc}/web/image/product.template/{pid}/image_256'
+
+
+def image_url(value, base):
+    """Absolute same-site http(s) image URL, or None."""
+    if not value or not str(value).strip(): return None
+    url = urljoin(base, str(value).strip())
+    parts = urlsplit(url)
+    return url if parts.scheme in ('http', 'https') and parts.netloc == urlsplit(base).netloc else None
 
 
 def safe_launch_args(args):
@@ -72,6 +90,54 @@ def safe_launch_args(args):
     result['args'] = [a for a in args.get('args', [])
         if 'AutomationControlled' not in a and not a.startswith('--ignore-certificate-errors')]
     return result
+
+
+class NativeUARobotsParser:
+    """Delegate to Crawl4AI's RobotsParser, but never hand it an empty User-Agent."""
+    def __init__(self, parser, user_agent):
+        self.parser, self.user_agent = parser, (user_agent or '').strip() or '*'
+
+    async def can_fetch(self, url, user_agent=None):
+        return await self.parser.can_fetch(url, (user_agent or '').strip() or self.user_agent)
+
+    def __getattr__(self, name):
+        return getattr(self.parser, name)
+
+
+async def native_user_agent(crawler):
+    """Read the UA Chrome really sends (no spoofing); fall back to the robots wildcard."""
+    try:
+        browser = crawler.crawler_strategy.browser_manager.browser
+        probe = await browser.new_page()
+        try: return await probe.evaluate('navigator.userAgent')
+        finally: await probe.close()
+    except Exception:
+        return '*'
+
+
+def access_control_page(html):
+    """True only for real block/challenge interstitials.
+
+    Normal Cloudflare-fronted pages (including Lecomte's catalogue) embed the passive bot-detection
+    script /cdn-cgi/challenge-platform/scripts/jsd/main.js; that alone is not an access-control page.
+    """
+    low = (html or '').lower()
+    if any(marker in low for marker in ('your request was blocked', 'cf-chl-', '_cf_chl_opt', 'cf-browser-verification')):
+        return True
+    if re.search(r'/cdn-cgi/challenge-platform/(?:h/|orchestrate/)', low):
+        return True
+    title = re.search(r'<title[^>]*>(.*?)</title>', low, re.S)
+    return bool(title and title.group(1).strip() in ('just a moment...', 'attention required! | cloudflare', 'access denied'))
+
+
+def failure_detail(result):
+    """First meaningful line of Crawl4AI's error, without URLs/HTML, so logs show the real cause."""
+    text = str(getattr(result, 'error_message', '') or '')
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    # Crawl4AI appends a traceback; the last line holds the exception type and message.
+    line = next((l for l in reversed(lines) if re.match(r'^[A-Za-z_.]+(Error|Exception)\b', l)), lines[0] if lines else '')
+    line = re.sub(r'https?://\S+', '<url>', line)
+    return line[:200]
 
 
 def crawler_factory(headless=False):
@@ -86,11 +152,10 @@ def crawler_factory(headless=False):
     class PolicyWebCrawler(AsyncWebCrawler):
         async def start(self):
             await super().start()
-            # Crawl4AI's robots parser requires a string even when native browser UA is used.
-            # Read it from a blank Chrome page; never spoof or disable robots checking.
-            probe = await self.crawler_strategy.browser_manager.browser.new_page()
-            try: self.browser_config.user_agent = await probe.evaluate('navigator.userAgent')
-            finally: await probe.close()
+            # Crawl4AI 0.9.4 passes browser_config.user_agent straight to urllib's RobotFileParser,
+            # which calls .split() on it. We keep the native Chrome UA (user_agent=None), so give the
+            # robots check the real UA string instead of None. robots.txt checking stays enabled.
+            self.robots_parser = NativeUARobotsParser(self.robots_parser, await native_user_agent(self))
             return self
     cfg = BrowserConfig(headless=headless, chrome_channel='chrome', channel='chrome',
         enable_stealth=False, ignore_https_errors=False, verbose=False)
@@ -146,11 +211,12 @@ async def collect(config, factory=None, run_config_factory=None):
             if initial_status in (403, 429): status = initial_status
             if status in (403, 429): raise CollectionError(f'站点拒绝访问 HTTP {status}；监控已暂停', status)
             if not result.success or status != 200:
-                detail = getattr(result, 'error_message', '') or ''
-                if 'robotparser.py' in detail and 'NoneType' in detail:
+                detail = failure_detail(result)
+                if 'robotparser' in str(getattr(result, 'error_message', '') or '') and 'NoneType' in detail:
                     raise CollectionError('robots.txt 检查发生 User-Agent 兼容性错误；未提交快照', status)
-                raise CollectionError(f'第 {index} 页访问失败（HTTP {status if status is not None else "未知"}）；未提交快照', status)
-            if any(marker in html.lower() for marker in ('your request was blocked', 'cf-chl-', 'challenge-platform')):
+                where = f'第 {index} 页访问失败（HTTP {status if status is not None else "未知"}）'
+                raise CollectionError(where + (f'：{detail}' if detail else '') + '；未提交快照', status)
+            if access_control_page(html):
                 raise CollectionError('站点返回访问控制页面；监控已暂停', 403)
             final_url = getattr(result, 'redirected_url', None) or urls[index]
             if urlsplit(final_url).netloc != urlsplit(config['url']).netloc:

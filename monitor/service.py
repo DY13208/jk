@@ -1,10 +1,18 @@
 import asyncio
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from adapters import REGISTRY
 from crawl4ai_run.run_crawl4ai import CollectionError
 from .notifications import Notifier
+
+
+def describe(exc):
+    """Show the real cause (type + short message) instead of a generic failure text."""
+    if isinstance(exc,(asyncio.TimeoutError,TimeoutError)) and not str(exc): return '采集超时（超过 300 秒）；未提交快照'
+    text = re.sub(r'https?://\S+','<url>',' '.join(str(exc).split()))[:200]
+    return f'采集失败：{type(exc).__name__}' + (f'：{text}' if text else '') + '；未提交快照'
 
 
 class MonitorService:
@@ -80,7 +88,7 @@ class MonitorService:
             if log: self.db.log_finish(log,'INTERRUPTED','任务取消；未提交快照')
             raise
         except Exception as exc:
-            reason = str(exc) if isinstance(exc,CollectionError) else '采集失败：'+type(exc).__name__
+            reason = str(exc) if isinstance(exc,CollectionError) else describe(exc)
             if log:
                 self.db.log_finish(log,'FAILED',reason)
                 if isinstance(exc,CollectionError) and exc.status in (403,429):

@@ -5,9 +5,10 @@ import json
 import os
 import time
 import smtplib
+import ssl
 from urllib.parse import urlsplit
 import httpx
-from .database import now
+from .database import now, run_summary
 from .email_delivery import configuration, build_email, send_email
 
 from .mail_templates import LABELS, message
@@ -40,7 +41,7 @@ class Notifier:
                 with self.db.connect() as db:
                     db.execute('BEGIN IMMEDIATE')
                     # A crash after transmission cannot prove whether the endpoint accepted it.
-                    db.execute("UPDATE monitor_outbox SET status='uncertain',last_error='发送进程中断，需人工核对' WHERE status='sending' AND claimed_at<?", (time.time()-60,))
+                    db.execute("UPDATE monitor_outbox SET status='uncertain',last_error='发送进程中断，需人工核对' WHERE status='sending' AND claimed_at<? AND site_id IN (SELECT id FROM monitor_sites WHERE notification_channel!='agentmail')", (time.time()-120,))
                     # Agent Mail uses the host OS keychain and is dispatched by its host worker.
                     row = db.execute("SELECT o.* FROM monitor_outbox o JOIN monitor_sites s ON s.id=o.site_id WHERE o.status='pending' AND o.next_at<=? AND s.notification_channel!='agentmail' ORDER BY o.id LIMIT 1", (time.time(),)).fetchone()
                     if not row: return
@@ -80,7 +81,8 @@ class Notifier:
 
     async def deliver_email(self, row, site, event, content):
         config = configuration(site)
-        mail = build_email(site, event, content, config)
+        with self.db.connect() as conn: summary = run_summary(conn, event.get('run_id'))
+        mail = build_email(site, event, content, config, summary)
         try:
             refused = await asyncio.to_thread(self.email_sender, config, mail)
             if refused:

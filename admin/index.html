@@ -1,8 +1,74 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>商品监控管理台</title><link rel="stylesheet" href="/assets/style.css"></head>
-<body><div class="app"><aside class="sidebar"><div class="brand"><span class="brand-icon">监</span><div><strong>商品监控</strong><small>多网站运行管理台</small></div><button id="toggle" class="icon" title="折叠导航" aria-label="折叠导航">☰</button></div><div class="nav-label">工作空间</div><nav id="navigation"></nav><footer><span class="dot"></span><span class="footer-label">Crawl4AI · SQLite<br><small>完整快照 · 稳定 ID 比对</small></span></footer></aside>
-<main><header><div><div class="eyebrow">商品监控 / <span id="breadcrumb">监控总览</span></div><h1 id="title">监控总览</h1><p id="subtitle">观察采集状态、商品变化和消息送达情况。</p></div><div class="actions"><button id="backup">数据备份</button><button id="refresh">刷新数据 ↻</button></div></header><div id="error" role="alert" hidden></div><div id="status" class="notice" role="status" hidden></div><div id="content" aria-live="polite">正在加载…</div><a class="small" href="/assets/credits.html" target="_blank" rel="noopener">开源组件与致谢 ↗</a></main></div>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>商品监控管理台</title><link rel="stylesheet" href="/assets/vendor/tabler/tabler.min.css"><link rel="stylesheet" href="/assets/style.css?v=2"></head>
+<body><div class="app"><aside class="sidebar"><div class="brand"><span class="brand-icon"><svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="20"
+  height="20"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  class="ui-icon" aria-hidden="true"
+>
+  <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+  <path d="M21 12h-8a1 1 0 1 0 -1 1v8a9 9 0 0 0 9 -9" />
+  <path d="M16 9a5 5 0 1 0 -7 7" />
+  <path d="M20.486 9a9 9 0 1 0 -11.482 11.495" />
+</svg></span><div><strong>商品监控</strong><small>CATALOG MONITOR</small></div><button id="toggle" class="icon" title="折叠导航" aria-label="折叠导航"><svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="20"
+  height="20"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  class="ui-icon" aria-hidden="true"
+>
+  <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+  <path d="M4 6a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2l0 -12" />
+  <path d="M9 4v16" />
+  <path d="M15 10l-2 2l2 2" />
+</svg></button></div><div class="nav-label">监控工作台</div><nav id="navigation"></nav><footer><span class="dot"></span><span class="footer-label">本地工作空间<br><small>完整快照 · 独立网站监控</small></span></footer></aside>
+<main><header><div><div class="eyebrow">工作台 <span class="breadcrumb-divider">/</span> <span id="breadcrumb">监控总览</span></div><h1 id="title">监控总览</h1><p id="subtitle">观察采集状态、商品变化和消息送达情况。</p></div><div class="actions"><button id="backup"><svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="20"
+  height="20"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  class="ui-icon" aria-hidden="true"
+>
+  <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+  <path d="M4 6c0 1.657 3.582 3 8 3s8 -1.343 8 -3s-3.582 -3 -8 -3s-8 1.343 -8 3" />
+  <path d="M4 6v6c0 1.657 3.582 3 8 3c1.118 0 2.183 -.086 3.15 -.241" />
+  <path d="M20 12v-6" />
+  <path d="M4 12v6c0 1.657 3.582 3 8 3c.157 0 .312 -.002 .466 -.005" />
+  <path d="M16 19h6" />
+  <path d="M19 16l3 3l-3 3" />
+</svg>数据备份</button><button id="refresh"><svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="20"
+  height="20"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  class="ui-icon" aria-hidden="true"
+>
+  <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+  <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4" />
+  <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4" />
+</svg>刷新数据</button></div></header><div id="error" role="alert" hidden></div><div id="status" class="notice" role="status" hidden></div><div id="content" aria-live="polite">正在加载…</div></main></div>
 <dialog id="editor"><form id="site-form"><div class="dialog-head"><h2 id="editor-title">网站设置</h2><button type="button" id="close-editor" class="icon" aria-label="关闭">×</button></div><p class="muted">每个网站使用独立 ID 和商品基线。修改已有目录范围时请新增网站。</p>
 <div class="form-grid"><label>网站 ID<input name="id" required pattern="[a-z][a-z0-9_-]{0,47}" placeholder="例如 store3"></label><label>网站名称<input name="name" required maxlength="100"></label><label class="wide">商品列表 URL<input name="url" type="url" placeholder="https://…"></label><label>采集适配器<select name="adapter"><option value="odoo_lecomte">Lecomte / Odoo</option><option value="css_catalog">通用 CSS 配置</option></select></label><label>监控间隔（分钟）<input name="interval_minutes" type="number" min="1" max="10080" required value="15"></label><label class="wide">适配器配置（JSON）<textarea name="adapter_config" rows="4">{}</textarea></label><label class="wide">访问政策及许可核对依据（选填）<textarea name="policy_note" rows="2" placeholder="选填政策链接、许可范围与核对日期"></textarea></label></div>
 <label class="check"><input name="permission_confirmed" type="checkbox">已核对站点政策及自动化访问许可</label><label class="check"><input name="enabled" type="checkbox">启用采集（403 / 429 后自动暂停）</label>
-<fieldset><legend>消息通知</legend><label>通知方式<select name="notification_channel" id="notification-channel"><option value="wecom">企业微信机器人</option><option value="email">邮件（SMTP）</option><option value="agentmail">Agent Mail CLI（QQ 邮箱）</option></select></label><label class="check"><input name="notify_enabled" type="checkbox">启用消息推送</label><div id="wecom-fields"><label>Webhook 环境变量名<input name="webhook_env" placeholder="WECOM_LECOMTE_WEBHOOK" pattern="[A-Z][A-Z0-9_]{0,79}"></label><p class="muted">Webhook 在部署环境中配置，后台不读取或显示密钥。</p></div><div id="email-fields" hidden><label>收件邮箱<input name="email_to" placeholder="you@example.com，多邮箱用逗号分隔" maxlength="2000"></label><p class="muted">SMTP 发件账号在部署环境中配置；Agent Mail 需在本机授权并启动邮件工作进程。启用推送即授权向上述邮箱自动发送所选事件。</p></div><div id="event-rules"></div></fieldset><div id="form-error" class="error" hidden></div><div class="dialog-actions"><button type="submit" class="primary">保存网站设置</button></div></form></dialog>
-<script src="/assets/app.js" defer></script></body></html>
+<fieldset><legend>消息通知</legend><label>通知方式<select name="notification_channel" id="notification-channel"><option value="wecom">企业微信机器人</option><option value="email">邮件（SMTP）</option><option value="agentmail">Agent Mail CLI（QQ 邮箱）</option></select></label><label class="check"><input name="notify_enabled" type="checkbox">启用消息推送</label><div id="wecom-fields"><label>Webhook 环境变量名<input name="webhook_env" placeholder="WECOM_LECOMTE_WEBHOOK" pattern="[A-Z][A-Z0-9_]{0,79}"></label><p class="muted">Webhook 在部署环境中配置，后台不读取或显示密钥。</p></div><div id="email-fields" hidden><label>收件邮箱<input name="email_to" placeholder="you@example.com，多邮箱用逗号分隔" maxlength="2000"></label><p class="muted" id="email-hint">SMTP 发件账号在部署环境中配置；Agent Mail 的发件账号是本机 agently-cli 授权的邮箱，需在本机授权并启动邮件工作进程（见“通知设置”页的 Agent Mail 面板）。启用推送即授权向上述邮箱自动发送所选事件。</p></div><div id="event-rules"></div></fieldset><div id="form-error" class="error" hidden></div><div class="dialog-actions"><button type="submit" class="primary">保存网站设置</button></div></form></dialog>
+<script src="/assets/icons.js"></script><script src="/assets/app.js?v=3" defer></script></body></html>

@@ -7,13 +7,15 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 from adapters import REGISTRY
 from .database import Database, EVENTS
 from .service import MonitorService
 from .email_delivery import recipients
+from . import agentmail
+from .mail_templates import render_html, LABELS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,11 +56,22 @@ class SiteInput(BaseModel):
         return self
 
 
+class AuthInput(BaseModel):
+    action: str = Field(pattern=r'^(login|logout|cancel)$')
+
+
+class MailTestInput(BaseModel):
+    site_id: str = Field(pattern=r'^[a-z][a-z0-9_-]{0,47}$')
+    to: str = Field(default='',max_length=2000)
+    confirm: bool = False
+
+
 def create_app(db_path=None, scheduled=True):
     db = Database(db_path or os.getenv('DB_PATH',str(ROOT/'data'/'snapshots.db')))
     @asynccontextmanager
     async def lifespan(app):
         db.migrate()
+        agentmail.worker_token(db)
         app.state.service = MonitorService(db)
         if scheduled: app.state.service.start()
         yield
@@ -68,6 +81,11 @@ def create_app(db_path=None, scheduled=True):
 
     @app.middleware('http')
     async def guard(request: Request, call_next):
+        if request.url.path.startswith('/api/agentmail/worker/'):
+            # Host worker endpoints: only the random token from data/agentmail-worker.token is accepted.
+            if not agentmail.valid_token(db, request.headers.get('x-agentmail-token','')):
+                return JSONResponse({'detail':'工作进程令牌无效'},403)
+            return await call_next(request)
         password = os.getenv('ADMIN_PASSWORD','')
         if request.url.path != '/health' and password:
             import base64
@@ -138,13 +156,66 @@ def create_app(db_path=None, scheduled=True):
         return db.history('monitor_outbox',limit=limit,offset=offset)
 
     @app.get('/api/agentmail/status')
-    def agentmail_status():
-        import time, json
-        with db.connect() as conn:
-            row = conn.execute("SELECT value FROM monitor_meta WHERE key='agentmail_worker'").fetchone()
-        state = json.loads(row[0]) if row else {}
-        return {'running':time.time()-state.get('heartbeat',0)<45, 'account':state.get('account',''),
-                'message':state.get('message','本机 Agent Mail 工作进程尚未启动')}
+    def agentmail_status(): return agentmail.status(db)
+
+    @app.post('/api/agentmail/test',status_code=202)
+    def agentmail_test(payload: MailTestInput):
+        # Explicit admin click only; never triggered by schedules or page loads.
+        if not payload.confirm: raise HTTPException(400,'请确认后再发送测试邮件')
+        try: return agentmail.request_test(db,payload.site_id,payload.to or None)
+        except LookupError as exc: raise HTTPException(404,str(exc)) from exc
+        except ValueError as exc: raise HTTPException(409,str(exc)) from exc
+
+    @app.get('/api/mail/preview',response_class=HTMLResponse)
+    def mail_preview(kind: str='NEW', site_id: str='lecomte'):
+        """Render a template locally with a real product from the latest snapshot when available. Sends nothing."""
+        if kind not in [*LABELS,'ACCESS_DENIED','TEST']: raise HTTPException(400,'未知邮件类型')
+        site = db.site(site_id) or {'name':'示例网站'}
+        items = db.products(site_id) if db.site(site_id) else []
+        product = dict(items[0]) if items else {'product_id':'44892','name':'Kyanite Jacket Cloud','brand':"Arc'teryx",
+            'sale_price':'143.96','original_price':'179.95','currency':'EUR','discount':'-20%','label':'Promotion',
+            'url':'https://www.lecomte-alpirando.be/en/shop/kyanite-jacket-cloud-44892'}
+        payload = {'product':product,'old_price':None}
+        from decimal import Decimal
+        price = Decimal(str(product.get('sale_price') or '0'))
+        if kind=='PRICE_DROP': payload['old_price']=str((price*Decimal('1.25')).quantize(Decimal('0.01')))
+        if kind=='PRICE_RISE': payload['old_price']=str((price*Decimal('0.8')).quantize(Decimal('0.01')))
+        if kind=='ACCESS_DENIED': payload={'message':'站点拒绝访问 HTTP 403；监控已暂停（预览示例）'}
+        if not product.get('image') and site.get('adapter')=='odoo_lecomte' and site.get('url'):
+            # Snapshots taken before thumbnails were collected: use Odoo's standard public product image.
+            from crawl4ai_run.run_crawl4ai import odoo_image
+            product['image']=odoo_image(site['url'],product.get('product_id'))
+        event = {'id':'预览','kind':kind,'at':agentmail.now_iso(),'payload':payload}
+        summary = {'total':len(items),'changes':3} if items else None
+        return HTMLResponse(render_html(site,event,summary),headers={'Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; img-src https: data:"})
+
+    @app.post('/api/agentmail/auth',status_code=202)
+    def agentmail_auth(payload: AuthInput):
+        try: return {'auth':agentmail.request_auth(db,payload.action)}
+        except ValueError as exc: raise HTTPException(409,str(exc)) from exc
+
+    @app.post('/api/agentmail/worker/command')
+    def worker_command(): return {'command':agentmail.worker_command(db)}
+
+    @app.post('/api/agentmail/worker/auth')
+    async def worker_auth(request: Request):
+        try: return {'auth':agentmail.worker_auth_update(db,await request.json())}
+        except LookupError as exc: raise HTTPException(409,str(exc)) from exc
+        except ValueError as exc: raise HTTPException(400,str(exc)) from exc
+
+    @app.post('/api/agentmail/worker/heartbeat')
+    async def worker_heartbeat(request: Request):
+        return agentmail.heartbeat(db,await request.json())
+
+    @app.post('/api/agentmail/worker/claim')
+    def worker_claim():
+        return {'job':agentmail.claim(db)}
+
+    @app.post('/api/agentmail/worker/result')
+    async def worker_result(request: Request):
+        body = await request.json()
+        try: return agentmail.finish(db,body.get('job'),body.get('result') or {})
+        except LookupError as exc: raise HTTPException(409,str(exc)) from exc
 
     @app.post('/api/notifications/{row_id}/retry')
     def retry(row_id: int):
@@ -159,6 +230,22 @@ def create_app(db_path=None, scheduled=True):
     async def backup(request: Request):
         import asyncio
         return {'filename':await asyncio.to_thread(db.backup,'manual')}
+
+    @app.get('/api/backups')
+    def backups():
+        folder = db.path.parent/'backups'
+        items = [{'filename':p.name,'size':p.stat().st_size} for p in folder.glob('*.db')
+                 if p.is_file() and not p.is_symlink()] if folder.exists() else []
+        return {'items':sorted(items,key=lambda p:p['filename'],reverse=True)}
+
+    @app.get('/api/backups/{filename}')
+    def download_backup(filename: str):
+        folder = (db.path.parent/'backups').resolve()
+        target = folder/filename
+        if (not re.fullmatch(r'[A-Za-z0-9_-]+\.db',filename) or target.is_symlink()
+            or target.resolve().parent != folder or not target.is_file()):
+            raise HTTPException(404,'备份不存在')
+        return FileResponse(target,filename=filename,media_type='application/octet-stream')
 
     return app
 

@@ -129,3 +129,7 @@ This product includes software developed by UncleCode (https://x.com/unclecode) 
 
 已支持按网站选择邮件（SMTP）或企业微信推送，收件邮箱可独立设置。发件账号通过部署环境配置，推送默认关闭。详见 [邮件推送说明](docs/EMAIL.md)。
 
+
+## 新版管理界面
+
+管理后台复用 Tabler 1.6.1 和 Tabler Icons，资源本地部署。详见 [界面更新及验证](docs/UI_REDESIGN.md)。Agent Mail CLI 接入与用户配置见 [Agent Mail 说明](docs/AGENTMAIL.md)。

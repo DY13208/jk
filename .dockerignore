@@ -9,3 +9,6 @@ __pycache__
 target.html
 release.json
 dist
+.ui-vendor
+!admin/vendor/
+!admin/vendor/**

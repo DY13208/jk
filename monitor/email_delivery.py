@@ -30,7 +30,7 @@ def configuration(site):
                 password=password, recipients=recipients(site.get('email_to', '')))
 
 
-def build_email(site, event, content, config):
+def build_email(site, event, content, config, summary=None):
     mail = EmailMessage()
     mail['From'] = config['sender']
     mail['To'] = ', '.join(config['recipients'])
@@ -38,7 +38,7 @@ def build_email(site, event, content, config):
     mail['Subject'] = content.splitlines()[0][:180]
     mail['Message-ID'] = f"<product-monitor-event-{event['id']}@{config['sender'].split('@')[1]}>"
     mail.set_content(content)
-    mail.add_alternative(render_html(site,event),subtype='html')
+    mail.add_alternative(render_html(site,event,summary),subtype='html')
     return mail
 
 
