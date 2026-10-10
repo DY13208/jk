@@ -1,0 +1,33 @@
+services:
+  monitor:
+    build: .
+    init: false # tini supervises uvicorn and Xvfb in the image
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      DB_PATH: /app/data/snapshots.db
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      WECOM_LECOMTE_WEBHOOK: ${WECOM_LECOMTE_WEBHOOK:-}
+      WECOM_SITE2_WEBHOOK: ${WECOM_SITE2_WEBHOOK:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_SECURITY: ${SMTP_SECURITY:-ssl}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+    shm_size: 1gb
+    restart: unless-stopped
+    stop_grace_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

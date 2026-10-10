@@ -1,0 +1,9 @@
+vendor/
+data/
+.env
+__pycache__/
+.pytest_cache/
+target.html
+.venv/
+dist/
+release.json

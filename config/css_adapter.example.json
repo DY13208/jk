@@ -1,0 +1,25 @@
+{
+  "pager_selector": ".catalog-pager",
+  "total_attribute": "data-total-count",
+  "pages_attribute": "data-page-count",
+  "page_link_selector": ".catalog-pager a[href]",
+  "page_pattern": "/catalog/page/(\\d+)",
+  "decimal_separator": ".",
+  "max_pages": 200,
+  "page_delay": 1.5,
+  "schema": {
+    "name": "products",
+    "baseSelector": "article.product",
+    "baseFields": [{"name": "product_template_id", "type": "attribute", "attribute": "data-id"}],
+    "fields": [
+      {"name": "name", "selector": "h2", "type": "text"},
+      {"name": "url", "selector": "a", "type": "attribute", "attribute": "href"},
+      {"name": "sale_price", "selector": ".price", "type": "text"},
+      {"name": "original_price", "selector": ".original-price", "type": "text"},
+      {"name": "currency", "selector": ".currency", "type": "text"},
+      {"name": "discount", "selector": ".discount", "type": "text"},
+      {"name": "sku", "selector": ".sku", "type": "text"},
+      {"name": "stock", "selector": ".stock", "type": "text"}
+    ]
+  }
+}

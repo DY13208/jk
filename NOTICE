@@ -1,0 +1,6 @@
+This product includes software developed by UncleCode (https://x.com/unclecode) as part of the Crawl4AI project (https://github.com/unclecode/crawl4ai).
+
+The feasibility scripts supplied by the user are preserved in legacy/*.original.py.
+run_crawl4ai.py was adapted for configurable traversal and fail-closed browser policy.
+diff_sqlite.py was extended with portable paths and transactional integration options.
+APScheduler, FastAPI, SQLite, BeautifulSoup, HTTPX and Playwright provide the runtime infrastructure.

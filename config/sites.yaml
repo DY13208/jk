@@ -1,0 +1,17 @@
+# No website selectors have been verified for lecomte: HTTP 403 on 2026-10-10.
+# Copy selector structure from example.yaml after authorized inspection.
+sites:
+  lecomte:
+    title: Lecomte Alpirando
+    enabled: false
+    url: https://www.lecomte-alpirando.be/shop?attribute_value=729-2672
+    interval_minutes: 15
+    events: [added, removed, relisted, price_changed, stock_changed]
+    notification_env: []
+  site2:
+    title: Website 2 - awaiting URL
+    enabled: false
+    url: null
+    interval_minutes: 15
+    events: [added, removed, relisted, price_changed]
+    notification_env: []

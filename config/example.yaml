@@ -1,0 +1,28 @@
+# Verified against the synthetic test fixture only. NOT a Lecomte configuration.
+sites:
+  example:
+    title: Example catalog
+    enabled: true
+    url: http://fixture:8090/shop?page=1
+    interval_minutes: 15
+    events: [added, removed, relisted, price_changed, stock_changed]
+    notification_env: [] # e.g. [WECOM_URL, TELEGRAM_URL]
+    card_selector: article.product
+    ready_selector: '#total'
+    total: {selector: '#total', attribute: data-count}
+    next_selector: a.next
+    terminal_selector: '#end'
+    max_pages: 100
+    run_timeout: 240
+    dynamic: none # none | load_more | scroll
+    # load_more_selector: button.more
+    # max_dynamic_steps: 100
+    decimal_separator: '.'
+    fields:
+      id: {attribute: data-id}
+      sku: {attribute: data-sku}
+      name: {selector: h2}
+      price: {selector: '.price'}
+      original_price: {selector: '.original'}
+      url: {selector: a, attribute: href}
+      stock: {attribute: data-stock}

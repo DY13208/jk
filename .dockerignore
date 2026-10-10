@@ -1,0 +1,11 @@
+vendor
+.env
+data
+.venv
+__pycache__
+**/__pycache__
+**/*.pyc
+.pytest_cache
+target.html
+release.json
+dist

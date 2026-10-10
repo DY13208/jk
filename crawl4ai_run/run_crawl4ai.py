@@ -1,0 +1,192 @@
+"""Reuse the tested JsonCssExtractionStrategy/Odoo rule, with production safety gates."""
+import asyncio
+import json
+import os
+import re
+import time
+from datetime import datetime, timezone
+from decimal import Decimal
+from pathlib import Path
+from urllib.parse import urljoin, urlsplit
+from bs4 import BeautifulSoup
+
+BASE = 'https://www.lecomte-alpirando.be'
+START = BASE + '/shop?attribute_value=729-2672'
+OUT = Path(os.getenv('OUTPUT_DIR', str(Path(__file__).resolve().parents[1] / 'data' / 'runs')))
+schema = {
+    'name': 'products', 'baseSelector': 'div.tp-product-item',
+    'baseFields': [{'name': 'product_template_id', 'type': 'attribute', 'attribute': 'data-product-template-id'}],
+    'fields': [
+        {'name': 'product_variant_id', 'selector': 'input[name=product_id]', 'type': 'attribute', 'attribute': 'value'},
+        {'name': 'name', 'selector': 'h6.tp-product-title a', 'type': 'attribute', 'attribute': 'title'},
+        {'name': 'url', 'selector': 'h6.tp-product-title a', 'type': 'attribute', 'attribute': 'href'},
+        {'name': 'sale_price', 'selector': 'span[itemprop=price]', 'type': 'text'},
+        {'name': 'currency', 'selector': 'span[itemprop=priceCurrency]', 'type': 'text'},
+        {'name': 'original_price', 'selector': 'del.compare-price .oe_currency_value', 'type': 'text'},
+        {'name': 'discount', 'selector': '.tp-discount-percentage', 'type': 'text'},
+        {'name': 'brand', 'selector': '[itemprop=brand]', 'type': 'attribute', 'attribute': 'content'},
+        {'name': 'label', 'selector': '.tp-product-label span', 'type': 'text'},
+    ],
+}
+
+
+class CollectionError(ValueError):
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
+
+
+def money(value, decimal_separator='auto'):
+    if value is None or not str(value).strip(): return None
+    text = str(value).replace('\u00a0', '').replace(' ', '').strip()
+    if decimal_separator == 'auto':
+        decimal_separator = ',' if ',' in text and text.rfind(',') > text.rfind('.') and len(text.rsplit(',',1)[1]) == 2 else '.'
+    text = text.replace('.', '').replace(',', '.') if decimal_separator == ',' else text.replace(',', '')
+    try:
+        number = Decimal(text)
+        if not number.is_finite() or number < 0: raise ValueError()
+        return str(number.quantize(Decimal('0.01')))
+    except Exception as exc:
+        raise CollectionError('商品价格格式无效') from exc
+
+
+def clean(p, page, base=BASE, *, odoo=True, decimal_separator='auto'):
+    canon = urljoin(base, p.get('url') or '').split('?')[0].split('#')[0]
+    slug = re.search(r'-(\d+)$', canon)
+    pid = str(p.get('product_template_id') or '').strip()
+    if not pid or (odoo and (not slug or slug.group(1) != pid)):
+        raise CollectionError('稳定商品 ID 缺失或与 Odoo URL 不一致')
+    if urlsplit(canon).netloc != urlsplit(base).netloc or not p.get('url'):
+        raise CollectionError('商品链接不在配置的网站内')
+    return {'product_id': pid, 'product_variant_id': p.get('product_variant_id'),
+        'slug_id': slug.group(1) if slug else None, 'name': (p.get('name') or '').strip(),
+        'brand': p.get('brand'), 'sale_price': money(p.get('sale_price'), decimal_separator),
+        'original_price': money(p.get('original_price'), decimal_separator),
+        'currency': (p.get('currency') or '').strip(), 'discount': (p.get('discount') or '').strip() or None,
+        'label': (p.get('label') or '').strip() or None, 'url': canon, 'listing_page': page,
+        'sku': p.get('sku'), 'stock': p.get('stock') or 'UNKNOWN'}
+
+
+def safe_launch_args(args):
+    result = dict(args)
+    result['args'] = [a for a in args.get('args', [])
+        if 'AutomationControlled' not in a and not a.startswith('--ignore-certificate-errors')]
+    return result
+
+
+def crawler_factory(headless=False):
+    from importlib.metadata import version
+    if version('crawl4ai') != '0.9.4':
+        raise CollectionError('浏览器安全扩展仅支持已核查的 Crawl4AI 0.9.4')
+    from crawl4ai import AsyncWebCrawler, BrowserConfig
+    from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
+    from crawl4ai.browser_manager import BrowserManager
+    class PolicyBrowserManager(BrowserManager):
+        def _build_browser_args(self): return safe_launch_args(super()._build_browser_args())
+    class PolicyWebCrawler(AsyncWebCrawler):
+        async def start(self):
+            await super().start()
+            # Crawl4AI's robots parser requires a string even when native browser UA is used.
+            # Read it from a blank Chrome page; never spoof or disable robots checking.
+            probe = await self.crawler_strategy.browser_manager.browser.new_page()
+            try: self.browser_config.user_agent = await probe.evaluate('navigator.userAgent')
+            finally: await probe.close()
+            return self
+    cfg = BrowserConfig(headless=headless, chrome_channel='chrome', channel='chrome',
+        enable_stealth=False, ignore_https_errors=False, verbose=False)
+    cfg.user_agent = None  # Keep native Chrome UA, not BrowserConfig's fixed default.
+    cfg.browser_hint = None
+    strategy = AsyncPlaywrightCrawlerStrategy(browser_config=cfg)
+    strategy.browser_manager = PolicyBrowserManager(browser_config=cfg, logger=strategy.logger)
+    return PolicyWebCrawler(config=cfg, crawler_strategy=strategy)
+
+
+def pagination(html, current, options):
+    soup = BeautifulSoup(html, 'html.parser')
+    pager = soup.select_one(options.get('pager_selector', '.tp-product-pager, [data-total-count][data-page-count]'))
+    if pager is None: raise CollectionError('缺少站点声明的总数/分页信息')
+    try:
+        total = int(pager[options.get('total_attribute', 'data-total-count')])
+        pages = int(pager[options.get('pages_attribute', 'data-page-count')])
+        if total < 0 or pages < 1 or pages > options.get('max_pages', 200): raise ValueError()
+    except (ValueError, KeyError, TypeError) as exc:
+        raise CollectionError('站点分页信息无效') from exc
+    links = {1: current}
+    pattern = options.get('page_pattern', r'/shop/page/(\d+)')
+    for a in soup.select(options.get('page_link_selector', 'a[href]')):
+        href = urljoin(current, a.get('href', ''))
+        match = re.search(pattern, urlsplit(href).path)
+        if match:
+            if urlsplit(href).netloc != urlsplit(current).netloc: raise CollectionError('分页跳转至其他网站')
+            if urlsplit(href).query != urlsplit(current).query: continue
+            links[int(match.group(1))] = href
+    if set(range(1, pages + 1)) - links.keys(): raise CollectionError('分页链接不完整；禁止遗漏页面')
+    return total, pages, links
+
+
+async def collect(config, factory=None, run_config_factory=None):
+    if run_config_factory is None:
+        from crawl4ai import CrawlerRunConfig, CacheMode, JsonCssExtractionStrategy
+        def run_config_factory():
+            return CrawlerRunConfig(cache_mode=CacheMode.BYPASS, check_robots_txt=True,
+                extraction_strategy=JsonCssExtractionStrategy(config.get('schema', schema)),
+                wait_until='domcontentloaded', page_timeout=60000, delay_before_return_html=1.5,
+                session_id='catalog', override_navigator=False, simulate_user=False, magic=False)
+    started = datetime.now(timezone.utc).isoformat()
+    clock = time.monotonic()
+    products, seen, logs = [], set(), []
+    async with (factory or crawler_factory)(False) as crawler:
+        urls, total, pages, index = {1: config['url']}, None, 1, 1
+        while index <= pages:
+            result = await crawler.arun(url=urls[index], config=run_config_factory())
+            initial_status, html = result.status_code, result.html or ''
+            if not result.success and 'robots.txt' in (getattr(result,'error_message','') or '').lower():
+                raise CollectionError('站点 robots.txt 拒绝自动化访问；监控已暂停',403)
+            status = getattr(result, 'redirected_status_code', None) or initial_status
+            if initial_status in (403, 429): status = initial_status
+            if status in (403, 429): raise CollectionError(f'站点拒绝访问 HTTP {status}；监控已暂停', status)
+            if not result.success or status != 200:
+                detail = getattr(result, 'error_message', '') or ''
+                if 'robotparser.py' in detail and 'NoneType' in detail:
+                    raise CollectionError('robots.txt 检查发生 User-Agent 兼容性错误；未提交快照', status)
+                raise CollectionError(f'第 {index} 页访问失败（HTTP {status if status is not None else "未知"}）；未提交快照', status)
+            if any(marker in html.lower() for marker in ('your request was blocked', 'cf-chl-', 'challenge-platform')):
+                raise CollectionError('站点返回访问控制页面；监控已暂停', 403)
+            final_url = getattr(result, 'redirected_url', None) or urls[index]
+            if urlsplit(final_url).netloc != urlsplit(config['url']).netloc:
+                raise CollectionError('入口重定向至其他网站')
+            page_total, page_count, page_urls = pagination(html, final_url, config)
+            if index == 1: total, pages, urls = page_total, page_count, page_urls
+            elif (page_total, page_count) != (total, pages): raise CollectionError('采集期间站点总数或分页发生变化')
+            try: items = json.loads(result.extracted_content or '[]')
+            except ValueError as exc: raise CollectionError('商品提取结果无效') from exc
+            for item in items:
+                product = clean(item, index, config['url'], odoo=config.get('odoo', True),
+                    decimal_separator=config.get('decimal_separator', 'auto'))
+                if product['product_id'] in seen: raise CollectionError('分页中出现重复商品 ID；可能发生列表移动')
+                if not product['name'] or product['sale_price'] is None: raise CollectionError('商品名称或价格缺失')
+                seen.add(product['product_id']); products.append(product)
+            logs.append({'page': index, 'status': status, 'initial_status':initial_status, 'items': len(items)})
+            index += 1
+            if index <= pages: await asyncio.sleep(config.get('page_delay', 1.5))
+    if len(products) != total: raise CollectionError('商品 ID 集合与站点声明总数不一致')
+    return {'meta': {'tool': 'crawl4ai', 'started': started, 'ended': datetime.now(timezone.utc).isoformat(),
+        'duration_s': round(time.monotonic() - clock, 2), 'site_total': total, 'site_pages': pages,
+        'extracted': len(products), 'pages': logs, 'complete': True}, 'products': products}
+
+
+async def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--url', default=START)
+    parser.add_argument('--permission-confirmed', action='store_true')
+    args = parser.parse_args()
+    if not args.permission_confirmed: parser.error('请先核对站点政策及访问许可，再使用 --permission-confirmed')
+    document = await collect({'url': args.url})
+    OUT.mkdir(parents=True, exist_ok=True)
+    path = OUT / ('crawl4ai_' + str(time.time_ns()) + '.json')
+    path.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding='utf-8')
+    print(path)
+
+
+if __name__ == '__main__': asyncio.run(main())
