@@ -137,7 +137,7 @@ def test_denied_pauses_and_alerts_without_removal(db,status):
     assert len(db.products('lecomte'))==1
     events=db.history('monitor_events')['items']
     assert [e['kind'] for e in events]==['ACCESS_DENIED']
-    assert db.history('monitor_outbox')['total']==1
+    assert db.history('monitor_outbox')['total']==0
 
 
 def test_task_timeout_and_overlap(db):

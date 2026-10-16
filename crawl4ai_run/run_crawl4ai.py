@@ -4,6 +4,8 @@ import json
 import os
 import re
 import time
+import hashlib
+import tempfile
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -140,7 +142,28 @@ def failure_detail(result):
     return line[:200]
 
 
-def crawler_factory(headless=False):
+def session_state_path(url):
+    """App-owned state only: never accept an arbitrary profile path from site configuration."""
+    root = Path(os.getenv('DB_PATH', str(Path(__file__).resolve().parents[1]/'data'/'snapshots.db'))).parent
+    return root/'browser-sessions'/(hashlib.sha256(url.encode()).hexdigest()+'.json')
+
+
+async def save_session_state(crawler, path):
+    # Crawl4AI 0.9.4 stores (context, page, timestamp) for the configured session.
+    session = crawler.crawler_strategy.browser_manager.sessions.get('catalog')
+    if not session: raise CollectionError('浏览器会话缺失；未保存会话状态')
+    state = await session[0].storage_state()
+    path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    fd, temporary = tempfile.mkstemp(dir=path.parent,suffix='.tmp')
+    try:
+        with os.fdopen(fd,'w',encoding='utf-8') as stream:
+            json.dump(state,stream,ensure_ascii=False)
+        os.replace(temporary,path)
+    finally:
+        if os.path.exists(temporary): os.unlink(temporary)
+
+
+def crawler_factory(headless=False, state_path=None, cdp_url=None):
     from importlib.metadata import version
     if version('crawl4ai') != '0.9.4':
         raise CollectionError('浏览器安全扩展仅支持已核查的 Crawl4AI 0.9.4')
@@ -158,7 +181,9 @@ def crawler_factory(headless=False):
             self.robots_parser = NativeUARobotsParser(self.robots_parser, await native_user_agent(self))
             return self
     cfg = BrowserConfig(headless=headless, chrome_channel='chrome', channel='chrome',
-        enable_stealth=False, ignore_https_errors=False, verbose=False)
+        enable_stealth=False, ignore_https_errors=False, verbose=False,
+        cdp_url=cdp_url,
+        storage_state=str(state_path) if state_path and state_path.is_file() else None)
     cfg.user_agent = None  # Keep native Chrome UA, not BrowserConfig's fixed default.
     cfg.browser_hint = None
     strategy = AsyncPlaywrightCrawlerStrategy(browser_config=cfg)
@@ -185,7 +210,8 @@ def pagination(html, current, options):
             if urlsplit(href).netloc != urlsplit(current).netloc: raise CollectionError('分页跳转至其他网站')
             if urlsplit(href).query != urlsplit(current).query: continue
             links[int(match.group(1))] = href
-    if set(range(1, pages + 1)) - links.keys(): raise CollectionError('分页链接不完整；禁止遗漏页面')
+    if options.get('pagination_mode') != 'load_more' and set(range(1, pages + 1)) - links.keys():
+        raise CollectionError('分页链接不完整；禁止遗漏页面')
     return total, pages, links
 
 
@@ -200,10 +226,40 @@ async def collect(config, factory=None, run_config_factory=None):
     started = datetime.now(timezone.utc).isoformat()
     clock = time.monotonic()
     products, seen, logs = [], set(), []
-    async with (factory or crawler_factory)(False) as crawler:
+    load_more = config.get('pagination_mode') == 'load_more'
+    state_path = session_state_path(config['url']) if config.get('persistent_session') else None
+    browser = factory(False) if factory else crawler_factory(False,state_path=state_path)
+    async with browser as crawler:
+        denied = []
+        if load_more and hasattr(crawler,'crawler_strategy'):
+            async def observe(page,context,**kwargs):
+                def response_received(response):
+                    if (response.status in (403,429) and response.request.resource_type in ('document','xhr','fetch')
+                        and urlsplit(response.url).netloc == urlsplit(config['url']).netloc):
+                        denied.append((response.status,response.request.resource_type,urlsplit(response.url).path))
+                page.on('response',response_received)
+            crawler.crawler_strategy.set_hook('on_page_context_created',observe)
         urls, total, pages, index = {1: config['url']}, None, 1, 1
         while index <= pages:
-            result = await crawler.arun(url=urls[index], config=run_config_factory())
+            run_config = run_config_factory()
+            if load_more and index > 1:
+                selector = json.dumps(config.get('load_more_selector','.tp-load-more-btn'))
+                base_selector = json.dumps(config.get('schema',schema)['baseSelector'])
+                session = (crawler.crawler_strategy.browser_manager.sessions.get('catalog')
+                           if hasattr(crawler,'crawler_strategy') else None)
+                click_script=f'document.querySelector({selector})?.click();'
+                if session:
+                    # Use a real input event on the existing Crawl4AI page (same as a UI click).
+                    await session[1].locator(json.loads(selector)).click(timeout=15000)
+                    click_script=None
+                run_config = run_config.clone(js_only=True,
+                    js_code_before_wait=click_script,
+                    wait_for=f'js:() => document.querySelectorAll({base_selector}).length > {len(products)}',
+                    wait_for_timeout=20000)
+            result = await crawler.arun(url=config['url'] if load_more else urls[index], config=run_config)
+            if denied:
+                code, resource, path = denied[0]
+                raise CollectionError(f'加载商品时站点拒绝访问 HTTP {code}（{resource} {path[:120]}）；监控已暂停',code)
             initial_status, html = result.status_code, result.html or ''
             if not result.success and 'robots.txt' in (getattr(result,'error_message','') or '').lower():
                 raise CollectionError('站点 robots.txt 拒绝自动化访问；监控已暂停',403)
@@ -218,7 +274,7 @@ async def collect(config, factory=None, run_config_factory=None):
                 raise CollectionError(where + (f'：{detail}' if detail else '') + '；未提交快照', status)
             if access_control_page(html):
                 raise CollectionError('站点返回访问控制页面；监控已暂停', 403)
-            final_url = getattr(result, 'redirected_url', None) or urls[index]
+            final_url = getattr(result, 'redirected_url', None) or (config['url'] if load_more else urls[index])
             if urlsplit(final_url).netloc != urlsplit(config['url']).netloc:
                 raise CollectionError('入口重定向至其他网站')
             page_total, page_count, page_urls = pagination(html, final_url, config)
@@ -226,15 +282,28 @@ async def collect(config, factory=None, run_config_factory=None):
             elif (page_total, page_count) != (total, pages): raise CollectionError('采集期间站点总数或分页发生变化')
             try: items = json.loads(result.extracted_content or '[]')
             except ValueError as exc: raise CollectionError('商品提取结果无效') from exc
+            previous = {p['product_id']:p for p in products} if load_more else {}
+            before = len(products)
+            if load_more: products, seen = [], set()
             for item in items:
                 product = clean(item, index, config['url'], odoo=config.get('odoo', True),
                     decimal_separator=config.get('decimal_separator', 'auto'))
                 if product['product_id'] in seen: raise CollectionError('分页中出现重复商品 ID；可能发生列表移动')
                 if not product['name'] or product['sale_price'] is None: raise CollectionError('商品名称或价格缺失')
+                if product['product_id'] in previous:
+                    old = previous[product['product_id']]
+                    if any(old[k] != product[k] for k in ('name','sale_price','original_price','url')):
+                        raise CollectionError('动态加载期间已有商品发生变化；未提交快照')
+                    product['listing_page'] = old['listing_page']
                 seen.add(product['product_id']); products.append(product)
-            logs.append({'page': index, 'status': status, 'initial_status':initial_status, 'items': len(items)})
+            if load_more and (not set(previous).issubset(seen) or (index>1 and len(products)<=before)):
+                raise CollectionError('动态加载没有增长或丢失已有商品；未提交快照')
+            logs.append({'page': index, 'status': status, 'initial_status':initial_status,
+                         'items': len(products)-before if load_more else len(items)})
             index += 1
             if index <= pages: await asyncio.sleep(config.get('page_delay', 1.5))
+        if len(products) != total: raise CollectionError('商品 ID 集合与站点声明总数不一致')
+        if state_path: await save_session_state(crawler,state_path)
     if len(products) != total: raise CollectionError('商品 ID 集合与站点声明总数不一致')
     return {'meta': {'tool': 'crawl4ai', 'started': started, 'ended': datetime.now(timezone.utc).isoformat(),
         'duration_s': round(time.monotonic() - clock, 2), 'site_total': total, 'site_pages': pages,

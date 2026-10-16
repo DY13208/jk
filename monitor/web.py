@@ -15,6 +15,7 @@ from .database import Database, EVENTS
 from .service import MonitorService
 from .email_delivery import recipients
 from . import agentmail
+from . import host_collector
 from .mail_templates import render_html, LABELS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +54,15 @@ class SiteInput(BaseModel):
         if self.enabled and self.adapter=='css_catalog' and not self.adapter_config.get('schema'):
             raise ValueError('CSS 适配器缺少提取 schema')
         if 'url' in self.adapter_config: raise ValueError('请在网站 URL 字段配置入口')
+        if 'persistent_session' in self.adapter_config and type(self.adapter_config['persistent_session']) is not bool:
+            raise ValueError('persistent_session 必须为 true 或 false')
+        delay = self.adapter_config.get('page_delay',1.5)
+        if type(delay) not in (int,float) or not 1 <= delay <= 30:
+            raise ValueError('page_delay 必须在 1 到 30 秒之间')
+        if self.adapter_config.get('pagination_mode','links') not in ('links','load_more'):
+            raise ValueError('pagination_mode 必须为 links 或 load_more')
+        if self.adapter_config.get('execution_mode','docker') not in ('docker','host','extension'):
+            raise ValueError('execution_mode 必须为 docker、host 或 extension')
         return self
 
 
@@ -72,6 +82,8 @@ def create_app(db_path=None, scheduled=True):
     async def lifespan(app):
         db.migrate()
         agentmail.worker_token(db)
+        host_collector.token(db)
+        host_collector.token(db,'extension')
         app.state.service = MonitorService(db)
         if scheduled: app.state.service.start()
         yield
@@ -81,6 +93,24 @@ def create_app(db_path=None, scheduled=True):
 
     @app.middleware('http')
     async def guard(request: Request, call_next):
+        if request.url.path.startswith('/api/collector/extension/worker/'):
+            origin=request.headers.get('origin','')
+            extension_origin=bool(re.fullmatch(r'chrome-extension://[a-p]{32}',origin))
+            if request.method=='OPTIONS':
+                if not extension_origin: return JSONResponse({'detail':'扩展来源无效'},403)
+                return JSONResponse({},headers={'Access-Control-Allow-Origin':origin,
+                    'Access-Control-Allow-Methods':'POST','Access-Control-Allow-Headers':'content-type,x-collector-token'})
+            if not host_collector.valid_token(db,request.headers.get('x-collector-token',''),'extension'):
+                return JSONResponse({'detail':'扩展令牌无效'},403)
+            if request.headers.get('content-length','0').isdigit() and int(request.headers.get('content-length','0'))>12_000_000:
+                return JSONResponse({'detail':'结果过大'},413)
+            response=await call_next(request)
+            if extension_origin: response.headers['Access-Control-Allow-Origin']=origin
+            return response
+        if request.url.path.startswith('/api/collector/worker/'):
+            if not host_collector.valid_token(db,request.headers.get('x-collector-token','')):
+                return JSONResponse({'detail':'采集工作进程令牌无效'},403)
+            return await call_next(request)
         if request.url.path.startswith('/api/agentmail/worker/'):
             # Host worker endpoints: only the random token from data/agentmail-worker.token is accepted.
             if not agentmail.valid_token(db, request.headers.get('x-agentmail-token','')):
@@ -113,6 +143,52 @@ def create_app(db_path=None, scheduled=True):
 
     @app.get('/api/overview')
     def overview(): return db.overview()
+
+    @app.get('/api/collector/status')
+    def collector_status(): return {**host_collector.status(db),'extension':host_collector.status(db,'extension')}
+
+    @app.post('/api/collector/extension/worker/heartbeat')
+    def extension_heartbeat(): return host_collector.heartbeat(db,'extension')
+
+    @app.post('/api/collector/extension/worker/claim')
+    def extension_claim(): return {'job':host_collector.claim(db,'extension')}
+
+    @app.post('/api/collector/extension/worker/sites')
+    def extension_sites():
+        return {'items':[{k:site[k] for k in ('id','name','url','adapter','adapter_config')}
+                         for site in db.sites() if site['adapter_config'].get('execution_mode')=='extension']}
+
+    @app.post('/api/collector/extension/worker/verify')
+    async def extension_verify(request: Request):
+        from .extension_capture import normalize
+        body=await request.json()
+        site=db.site(body.get('site_id'))
+        if not site or site['adapter_config'].get('execution_mode')!='extension':
+            raise HTTPException(409,'请先选择扩展采集模式')
+        try:
+            document=normalize(site,body.get('capture'))
+            db.validate(document)
+        except ValueError as exc: raise HTTPException(400,str(exc)) from exc
+        result={'products':len(document['products']),'pages':document['meta']['site_pages']}
+        return result
+
+    @app.post('/api/collector/extension/worker/result')
+    async def extension_result(request: Request):
+        try: return host_collector.finish(db,await request.json(),'extension')
+        except LookupError as exc: raise HTTPException(409,str(exc)) from exc
+        except ValueError as exc: raise HTTPException(400,str(exc)) from exc
+
+    @app.post('/api/collector/worker/heartbeat')
+    def collector_heartbeat(): return host_collector.heartbeat(db)
+
+    @app.post('/api/collector/worker/claim')
+    def collector_claim(): return {'job':host_collector.claim(db)}
+
+    @app.post('/api/collector/worker/result')
+    async def collector_result(request: Request):
+        try: return host_collector.finish(db,await request.json())
+        except LookupError as exc: raise HTTPException(409,str(exc)) from exc
+        except ValueError as exc: raise HTTPException(400,str(exc)) from exc
 
     @app.get('/api/sites')
     def sites():

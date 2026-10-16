@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends xvfb xauth tini
 COPY monitor monitor
 COPY adapters adapters
 COPY admin admin
+COPY chrome-extension chrome-extension
 COPY config config
 COPY crawl4ai_run crawl4ai_run
 COPY diff_sqlite.py .

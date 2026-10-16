@@ -1,5 +1,9 @@
 # 多网站电商商品监控
 
+日常 Chrome 可访问而自动化浏览器被拒绝时，可使用[日常 Chrome 扩展接入](docs/CHROME_EXTENSION.md)。目前扩展代码与后台接口已完成，真实站点验收需要先在日常 Chrome 中加载扩展并执行只读完整采集测试。
+
+2026-10-15 更新：已增加 Windows 本机 Chrome 采集进程并重新部署，可在网站设置选择运行位置。安装、配置、实测结果见 [本机采集说明](docs/HOST_COLLECTOR.md)。**Lecomte 的本机端到端测试仍遇到 HTTP 403，当前暂停，尚不能保证实际自动监控可用。** 下方旧版状态是初次交付记录。
+
 正式版本使用 **Crawl4AI 0.9.4 + 原有 diff_sqlite.py + APScheduler + SQLite + FastAPI**，提供中文 Web 管理后台。无需 EasySpider，也不再启动 changedetection.io。此前的研究、代码和回归测试保留供回溯，不参与正式 Compose 调度。
 
 ## 当前状态

@@ -117,6 +117,8 @@ def claim(db):
             except ValueError:
                 conn.execute("UPDATE monitor_outbox SET status='held',last_error='Agent Mail 收件邮箱配置无效' WHERE id=?", (row['id'],)); continue
             event = dict(conn.execute('SELECT * FROM monitor_events WHERE id=?', (row['event_id'],)).fetchone())
+            if event['kind'] == 'ACCESS_DENIED':
+                conn.execute("UPDATE monitor_outbox SET status='held',last_error='访问异常仅在后台记录，不推送' WHERE id=?", (row['id'],)); continue
             event['payload'] = json.loads(event['payload'])
             conn.execute("UPDATE monitor_outbox SET status='sending',claimed_at=?,attempts=attempts+1 WHERE id=?", (time.time(), row['id']))
             return _job('outbox', row['id'], site, event, addresses, run_summary(conn, event.get('run_id')))

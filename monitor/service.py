@@ -26,6 +26,8 @@ class MonitorService:
         self.tasks = set()
 
     def start(self):
+        from .host_collector import cancel_interrupted
+        cancel_interrupted(self.db)
         with self.db.connect() as db:
             db.execute("UPDATE monitor_logs SET status='INTERRUPTED',ended=datetime('now'),message='服务重启；未完成任务未提交快照' WHERE status='RUNNING'")
         self.scheduler.start()
@@ -76,7 +78,11 @@ class MonitorService:
                 site = self.db.site(site_id)
                 if not site['enabled']: return {'status':'DISABLED'}
                 log = self.db.log_start(site_id)
-                document = await asyncio.wait_for(self.adapters[site['adapter']](site),timeout=300)
+                if site['adapter_config'].get('execution_mode') in ('host','extension'):
+                    from .host_collector import collect
+                    operation=collect(self.db,site)
+                else: operation=self.adapters[site['adapter']](site)
+                document = await asyncio.wait_for(operation,timeout=300)
                 # Administrative pause while collection is in flight also prevents commit.
                 if not self.db.site(site_id)['enabled']:
                     self.db.log_finish(log,'CANCELLED','采集期间网站被暂停，未提交快照')

@@ -105,6 +105,9 @@ class Database:
                     id INTEGER PRIMARY KEY,site_id TEXT,started TEXT NOT NULL,ended TEXT,status TEXT NOT NULL,
                     message TEXT NOT NULL DEFAULT '',run_id INTEGER REFERENCES runs(run_id));
                 CREATE TABLE IF NOT EXISTS monitor_leases(site_id TEXT PRIMARY KEY,owner TEXT,expires REAL);
+                CREATE TABLE IF NOT EXISTS monitor_host_jobs(
+                    id TEXT PRIMARY KEY,site_id TEXT NOT NULL,created REAL NOT NULL,status TEXT NOT NULL,
+                    claim TEXT,payload TEXT NOT NULL,result TEXT);
                 CREATE TABLE IF NOT EXISTS monitor_mail_tests(
                     id INTEGER PRIMARY KEY,site_id TEXT NOT NULL,recipients TEXT NOT NULL,status TEXT NOT NULL,
                     created TEXT NOT NULL,claimed_at REAL,finished TEXT,last_error TEXT NOT NULL DEFAULT '');
@@ -191,7 +194,8 @@ class Database:
             old = db.execute('SELECT url,adapter,adapter_config FROM monitor_sites WHERE id=?', (site['id'],)).fetchone()
             has_history = db.execute('SELECT 1 FROM monitor_run_meta WHERE site_id=? LIMIT 1', (site['id'],)).fetchone()
             if old and has_history and (old['url'] != site['url'] or old['adapter'] != site['adapter']
-                or json.loads(old['adapter_config']) != site['adapter_config']):
+                or {k:v for k,v in json.loads(old['adapter_config']).items() if k not in ('persistent_session','page_delay','pagination_mode','load_more_selector','execution_mode')}
+                != {k:v for k,v in site['adapter_config'].items() if k not in ('persistent_session','page_delay','pagination_mode','load_more_selector','execution_mode')}):
                 raise ValueError('已有历史的网站更改 URL 或适配器时，请使用新的网站 ID 建立独立基线')
             db.execute('''INSERT INTO monitor_sites(id,name,url,adapter,interval_minutes,enabled,permission_confirmed,
                 policy_note,adapter_config,event_rules,notify_enabled,webhook_env,created_at,notification_channel,email_to)
@@ -274,8 +278,7 @@ class Database:
             db.execute('UPDATE monitor_sites SET enabled=0,paused_reason=? WHERE id=?', (reason,site_id))
             cur = db.execute("INSERT INTO monitor_events(site_id,product_id,kind,at,payload) VALUES(?,'','ACCESS_DENIED',?,?)",
                 (site_id,now(),encode({'message':reason,'log_id':log_id})))
-            site = db.execute('SELECT notify_enabled FROM monitor_sites WHERE id=?', (site_id,)).fetchone()
-            if site[0]: db.execute('INSERT INTO monitor_outbox(event_id,site_id) VALUES(?,?)', (cur.lastrowid,site_id))
+            # Operational failures remain visible in history, without external notifications.
 
     def products(self, site_id):
         with self.connect() as db:

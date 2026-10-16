@@ -11,3 +11,25 @@ main{min-width:0;padding:30px 36px;max-width:1800px}header{display:flex;justify-
 .inline-actions{display:inline-flex;gap:8px;margin-left:8px;vertical-align:middle}.inline-actions button{font-size:12px;padding:4px 10px}.auth-box{margin-top:10px;padding:12px 14px;border:1px solid #cfdcf5;background:#f5f8ff;border-radius:6px;display:grid;gap:8px;max-width:760px}.auth-box.green{border-color:#bfe1cc;background:#f1faf4}.auth-box.red{border-color:#f0c9c5;background:#fdf3f2}.auth-box button{justify-self:start;font-size:12px;padding:4px 10px}.auth-link a{font-weight:600;word-break:break-all}.auth-link .code{font-size:15px;letter-spacing:2px}
 
 nav a:hover,nav a:focus{text-decoration:none}
+/* Dialogs share the existing Tabler typography and action colors. */
+dialog{border:1px solid var(--line);border-radius:16px;box-shadow:0 24px 80px #152d2930;max-height:calc(100dvh - 48px)}
+dialog::backdrop{background:#172d3b66;backdrop-filter:blur(4px)}
+#editor{padding:0;width:min(800px,calc(100vw - 32px))}
+#site-form{padding:0 28px 0;max-height:calc(100dvh - 50px);overflow:auto}
+#editor .dialog-head{position:sticky;top:0;background:white;z-index:1;padding:22px 0 16px;border-bottom:1px solid var(--line);margin-bottom:18px}
+#editor .dialog-head h2{margin:0;font-size:20px;color:var(--ink)}
+#editor .dialog-head .icon{width:36px;height:36px;display:grid;place-items:center;background:var(--bg);border-radius:8px;color:#485967}
+#editor label{font-size:13px;color:#465666}
+#editor fieldset{border:0;border-top:1px solid var(--line);border-radius:0;padding:20px 0 0;margin:24px 0}
+#editor legend{font-size:14px;color:var(--ink);padding:0 12px 0 0}
+#editor .dialog-actions{position:sticky;bottom:0;background:white;border-top:1px solid var(--line);padding:16px 0;gap:10px;margin-top:22px;z-index:1}
+.confirm-dialog{width:min(440px,calc(100vw - 32px));padding:28px}
+.confirm-mark{width:40px;height:40px;background:#edf4f1;color:var(--accent);border-radius:12px;display:grid;place-items:center;font-weight:700;font-size:22px;margin-bottom:18px}
+.confirm-dialog h2{font-size:20px;margin:0 0 12px;color:var(--ink)}
+.confirm-dialog p{white-space:pre-line;overflow-wrap:anywhere;color:#4e6070;line-height:1.7;font-size:14px;margin:0}
+.confirm-dialog .dialog-actions{gap:10px;margin-top:24px;padding:0}
+dialog button:focus-visible{outline:3px solid #25645166;outline-offset:3px}
+dialog[open]{animation:dialog-in .16s ease-out}
+@keyframes dialog-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@media(prefers-reduced-motion:reduce){dialog[open]{animation:none}}
+@media(max-width:560px){#site-form{padding:0 18px}.confirm-dialog{padding:22px}}
