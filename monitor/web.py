@@ -16,6 +16,7 @@ from .service import MonitorService
 from .email_delivery import recipients
 from . import agentmail
 from . import host_collector
+from . import weixin
 from .mail_templates import render_html, LABELS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +35,7 @@ class SiteInput(BaseModel):
     event_rules: list[str] = Field(default_factory=lambda:EVENTS.copy())
     notify_enabled: bool = False
     webhook_env: str = Field(default='',pattern=r'^$|^[A-Z][A-Z0-9_]{0,79}$')
-    notification_channel: str = Field(default='wecom',pattern=r'^(wecom|email|agentmail)$')
+    notification_channel: str = Field(default='wecom',pattern=r'^(wecom|email|agentmail|pushplus|weixin)$')
     email_to: str = Field(default='',max_length=2000)
 
     @model_validator(mode='after')
@@ -42,6 +43,8 @@ class SiteInput(BaseModel):
         if self.email_to: recipients(self.email_to)
         if self.notify_enabled and self.notification_channel in ('email','agentmail') and not self.email_to:
             raise ValueError('启用邮件推送前请填写收件邮箱')
+        if self.notify_enabled and self.notification_channel == 'pushplus' and not self.webhook_env:
+            raise ValueError('启用个人微信推送前请填写 pushplus Token 环境变量名')
         parsed = urlsplit(self.url)
         if self.url and (parsed.scheme not in ('https','http') or not parsed.hostname or parsed.username or parsed.password):
             raise ValueError('URL 必须是无用户名密码的 HTTP/HTTPS 地址')
@@ -51,15 +54,13 @@ class SiteInput(BaseModel):
             raise ValueError('启用采集前请填写商品列表 URL')
         if self.enabled and not self.permission_confirmed:
             raise ValueError('启用采集前请勾选“已核对站点政策及自动化访问许可”')
-        if self.enabled and self.adapter=='css_catalog' and not self.adapter_config.get('schema'):
-            raise ValueError('CSS 适配器缺少提取 schema')
         if 'url' in self.adapter_config: raise ValueError('请在网站 URL 字段配置入口')
         if 'persistent_session' in self.adapter_config and type(self.adapter_config['persistent_session']) is not bool:
             raise ValueError('persistent_session 必须为 true 或 false')
         delay = self.adapter_config.get('page_delay',1.5)
         if type(delay) not in (int,float) or not 1 <= delay <= 30:
             raise ValueError('page_delay 必须在 1 到 30 秒之间')
-        if self.adapter_config.get('pagination_mode','links') not in ('links','load_more'):
+        if self.adapter_config.get('pagination_mode','auto') not in ('auto','links','load_more','next_link'):
             raise ValueError('pagination_mode 必须为 links 或 load_more')
         if self.adapter_config.get('execution_mode','docker') not in ('docker','host','extension'):
             raise ValueError('execution_mode 必须为 docker、host 或 extension')
@@ -84,6 +85,7 @@ def create_app(db_path=None, scheduled=True):
         agentmail.worker_token(db)
         host_collector.token(db)
         host_collector.token(db,'extension')
+        weixin.token(db)
         app.state.service = MonitorService(db)
         if scheduled: app.state.service.start()
         yield
@@ -233,6 +235,21 @@ def create_app(db_path=None, scheduled=True):
 
     @app.get('/api/agentmail/status')
     def agentmail_status(): return agentmail.status(db)
+
+    @app.get('/api/weixin/status')
+    async def weixin_status():
+        response=JSONResponse(await weixin.status(db))
+        response.headers['Cache-Control']='no-store'
+        return response
+
+    @app.post('/api/weixin/{action}')
+    async def weixin_action(action: str, request: Request):
+        if action not in ('login','cancel','verify'): raise HTTPException(404,'操作不存在')
+        body=await request.json()
+        if action=='verify' and not re.fullmatch(r'\d{4,12}',str(body.get('code',''))):
+            raise HTTPException(400,'请填写微信要求的数字配对码')
+        try: return await weixin.request(db,action,{'code':body.get('code')} if action=='verify' else {})
+        except Exception: raise HTTPException(503,'微信连接服务暂不可用，请检查服务状态') from None
 
     @app.post('/api/agentmail/test',status_code=202)
     def agentmail_test(payload: MailTestInput):

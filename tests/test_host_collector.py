@@ -72,3 +72,20 @@ def test_paused_and_expired_host_jobs_never_claimed(db):
     enable(db)
     with db.connect() as c: c.execute("DELETE FROM monitor_host_jobs WHERE id='paused'")
     assert host.claim(db) is None
+
+@pytest.mark.parametrize('mode',['host','extension'])
+def test_invalid_snapshot_is_terminal_not_delivery_retry(db,mode):
+    site=enable(db);site['adapter_config']['execution_mode']=mode;db.save_site(site)
+    db.commit(site['id'],document([product(1)]));host.heartbeat(db,mode)
+    async def run():
+        task=asyncio.create_task(host.collect(db,site));await asyncio.sleep(0)
+        job=host.claim(db,mode)
+        invalid={'capture':{'checkpoints':[]}} if mode=='extension' else {'document':{'meta':{},'products':[]}}
+        result=host.finish(db,{**job,'result':invalid},mode)
+        assert result['ok'] and result['rejected'] and result['error']
+        with pytest.raises(CollectionError):await task
+        with pytest.raises(LookupError):host.finish(db,{**job,'result':invalid},mode)
+        assert len(db.products(site['id']))==1
+        assert db.history('monitor_events')['total']==0
+        assert db.history('monitor_outbox')['total']==0
+    asyncio.run(run())

@@ -215,6 +215,135 @@ def pagination(html, current, options):
     return total, pages, links
 
 
+NEXT_SELECTORS = ('link[rel=next], a[rel=next], .pagination .next a, a.next, li.next a, a.pagination__next, '
+                  'a[class*=next], a[aria-label*=next i], a[aria-label*=suivant i], a[title*=next i], a[title*=suivant i]')
+NEXT_TEXT = re.compile(r'^\s*(next|suivant|page suivante|weiter|nächste|siguiente|successivo|show more|load more|voir plus|›|»|→|>)\s*$', re.I)
+
+
+def next_page_link(html, current, options, visited):
+    """Follow the site's own "next page" link: rel=next / common next selectors / "next" text / ?page=N+1 links.
+    Same host only; never returns an already visited URL."""
+    soup = BeautifulSoup(html, 'html.parser')
+    here = urlsplit(current)
+    def usable(a):
+        raw = (a.get('href') or '').strip()
+        if not raw or raw.startswith(('#', 'javascript:')) or 'disabled' in (a.get('class') or []): return None
+        href = urljoin(current, raw).split('#')[0]
+        if href in visited or href == current: return None
+        if urlsplit(href).netloc != here.netloc: raise CollectionError('分页跳转到其他网站')
+        return href
+    candidates = list(soup.select(options.get('next_selector') or NEXT_SELECTORS))
+    candidates += [a for a in soup.select('a[href]') if NEXT_TEXT.match(a.get_text(' ', strip=True) or '')]
+    for a in candidates:
+        href = usable(a)
+        if href: return href
+    # ?page=N / &p=N / /page/N: link to the page right after the current one.
+    match = re.search(r'(?:[?&](?:page|p|pg)=|/page/)(\d+)', current)
+    want = (int(match.group(1)) if match else 1) + 1
+    for a in soup.select('a[href]'):
+        raw = a.get('href') or ''
+        if re.search(r'(?:[?&](?:page|p|pg)=|/page/)%d(?:\D|$)' % want, raw):
+            href = usable(a)
+            if href and urlsplit(href).path == here.path: return href
+    return None
+
+
+PRICE_RE = re.compile(r'(?:[€$£]|EUR|USD|CAD|CHF|GBP)\s*\d|\d[\d.,\s\u00a0]*[.,]\d{2}\s*(?:[€$£]|EUR|USD|CAD|CHF|GBP|kr)?', re.I)
+PRICE_PATTERN = r'(\d[\d.,\s\u00a0]*\d|\d)'
+
+
+def _css(element):
+    classes = [c for c in (element.get('class') or []) if re.fullmatch(r'[A-Za-z_][\w-]*', c)]
+    return element.name + ''.join('.' + c for c in classes[:2])
+
+
+def auto_schema(html, url):
+    """Heuristic Crawl4AI JsonCss schema for a product listing: the largest group of repeated, same-class
+    elements that each contain a same-site link and a price. Used when a site has no configured schema."""
+    soup = BeautifulSoup(html, 'html.parser')
+    for junk in soup.select('script,style,noscript,svg,header,footer,nav'): junk.decompose()
+    host = urlsplit(url).netloc
+    def has_link(el):
+        for a in el.select('a[href]'):
+            h = urljoin(url, a['href'])
+            if urlsplit(h).netloc == host and not a['href'].startswith('#') and urlsplit(h).path not in ('', '/'): return True
+        return False
+    groups = {}
+    for el in soup.find_all(class_=True):
+        groups.setdefault(_css(el), []).append(el)
+    best = None
+    for selector, items in groups.items():
+        if len(items) < 3 or '.' not in selector: continue
+        good = [el for el in items if has_link(el) and PRICE_RE.search(el.get_text(' ', strip=True))]
+        if len(good) < max(3, 0.8 * len(items)): continue
+        depth = len(list(good[0].parents))
+        key = (len(good), -depth)
+        if not best or key > best[0]: best = (key, selector, good)
+    if not best: raise CollectionError('无法自动识别商品列表；请在站点配置中提供 schema')
+    _, base, cards = best
+    def rel(el):
+        """Selector for el inside a card; class-less elements are anchored to their parent's classes."""
+        if el.get('class') or el.parent is None or el.parent in cards: return _css(el)
+        return _css(el.parent) + ' > ' + el.name
+    def pick(candidates_of, unique=False, reject=None):
+        counts, values = {}, {}
+        for card in cards:
+            for sel in dict.fromkeys(rel(el) for el in candidates_of(card)):
+                el = card.select_one(sel)
+                if el is None: continue
+                counts[sel] = counts.get(sel, 0) + 1
+                values.setdefault(sel, []).append(el.get('href'))
+        ranked = []
+        for sel, n in counts.items():
+            if n < 0.8 * len(cards): continue
+            if unique and len(set(values[sel])) < 0.8 * n: continue
+            if reject and any(reject(v or '') for v in values[sel]): continue
+            ranked.append(sel)
+        return ranked[0] if ranked else None
+    def links(card):
+        return [a for a in card.select('a[href]') if not a['href'].startswith(('#', 'javascript:'))]
+    def headings(card):
+        return card.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) + card.select('[class*=title], [class*=name]')
+    def prices(card, old=False):
+        found = []
+        for el in card.find_all(True):
+            text = el.get_text(' ', strip=True)
+            if not text or len(text) > 30 or not PRICE_RE.search(text): continue
+            if any(PRICE_RE.search(c.get_text(' ', strip=True) or '') for c in el.find_all(True)): continue  # not a leaf price
+            cls = ' '.join(el.get('class') or []) + ' ' + ' '.join(el.parent.get('class') or [])
+            is_old = el.name in ('del', 's', 'strike') or el.parent.name in ('del', 's', 'strike') or \
+                re.search(r'old|compare|was-|strike|before|crossed', cls, re.I)
+            if bool(is_old) == old: found.append(el)
+        return sorted(found, key=lambda el: 0 if re.search(r'sale|special|current|now', ' '.join(el.get('class') or []), re.I) else 1)
+    def image(card): return card.find_all('img')[:1]
+    junk_link = lambda href: bool(re.search(r'/(account|login|cart|basket|panier|wishlist|compare)\b', href, re.I))
+    url_sel = pick(lambda c: sorted(links(c), key=lambda a: 0 if a.get_text(strip=True) else 1), unique=True, reject=junk_link)
+    name_sel, price_sel = pick(headings), pick(prices)
+    if price_sel:  # cards without the main price element (e.g. sale cards) may use another price element
+        extra = []
+        for card in cards:
+            if card.select_one(', '.join([price_sel] + extra)) is None:
+                found = prices(card)
+                if found: extra.append(rel(found[0]))
+        price_sel = ', '.join(dict.fromkeys([price_sel] + extra))
+    if not url_sel or not price_sel: raise CollectionError('无法自动识别商品链接或价格；请在站点配置中提供 schema')
+    img_sel = pick(image)
+    # Old/compare-at prices exist only on discounted cards, so any card is enough evidence.
+    old_sel = ', '.join(dict.fromkeys(rel(found[0]) for found in (prices(c, True) for c in cards) if found)) or None
+    fields = [{'name': 'product_template_id', 'selector': url_sel, 'type': 'attribute', 'attribute': 'href'},
+              {'name': 'url', 'selector': url_sel, 'type': 'attribute', 'attribute': 'href'},
+              {'name': 'name', 'selector': name_sel or url_sel, 'type': 'text'},
+              {'name': 'sale_price', 'selector': price_sel, 'type': 'regex', 'pattern': PRICE_PATTERN}]
+    if old_sel and old_sel != price_sel:
+        fields.append({'name': 'original_price', 'selector': old_sel, 'type': 'regex', 'pattern': PRICE_PATTERN})
+    if img_sel:
+        sample = cards[0].select_one(img_sel)
+        attribute = next((a for a in ('data-src', 'data-original', 'src') if sample is not None and sample.get(a)
+                          and not str(sample.get(a)).startswith('data:')), 'src')
+        fields.append({'name': 'image', 'selector': img_sel, 'type': 'attribute', 'attribute': attribute})
+    return {'name': 'products', 'baseSelector': base, 'fields': fields, 'auto_generated': True}
+
+
 async def collect(config, factory=None, run_config_factory=None):
     if run_config_factory is None:
         from crawl4ai import CrawlerRunConfig, CacheMode, JsonCssExtractionStrategy
@@ -227,6 +356,10 @@ async def collect(config, factory=None, run_config_factory=None):
     clock = time.monotonic()
     products, seen, logs = [], set(), []
     load_more = config.get('pagination_mode') == 'load_more'
+    # CSS sites default to following next-page links; Odoo/Lecomte keeps its pager/load-more behaviour.
+    next_link = config.get('pagination_mode') == 'next_link' or (
+        config.get('pagination_mode') in (None, '', 'auto') and config.get('odoo', True) is False)
+    generated = None
     state_path = session_state_path(config['url']) if config.get('persistent_session') else None
     browser = factory(False) if factory else crawler_factory(False,state_path=state_path)
     async with browser as crawler:
@@ -277,11 +410,19 @@ async def collect(config, factory=None, run_config_factory=None):
             final_url = getattr(result, 'redirected_url', None) or (config['url'] if load_more else urls[index])
             if urlsplit(final_url).netloc != urlsplit(config['url']).netloc:
                 raise CollectionError('入口重定向至其他网站')
-            page_total, page_count, page_urls = pagination(html, final_url, config)
-            if index == 1: total, pages, urls = page_total, page_count, page_urls
+            if next_link:
+                page_total = page_count = None
+            else: page_total, page_count, page_urls = pagination(html, final_url, config)
+            if next_link: pass
+            elif index == 1: total, pages, urls = page_total, page_count, page_urls
             elif (page_total, page_count) != (total, pages): raise CollectionError('采集期间站点总数或分页发生变化')
-            try: items = json.loads(result.extracted_content or '[]')
-            except ValueError as exc: raise CollectionError('商品提取结果无效') from exc
+            if config.get('odoo', True) is False and not config.get('schema'):
+                from crawl4ai import JsonCssExtractionStrategy
+                generated = auto_schema(html, final_url)  # per page: sale-only fields vary by page
+                items = JsonCssExtractionStrategy(generated).extract(final_url, html)
+            else:
+                try: items = json.loads(result.extracted_content or '[]')
+                except ValueError as exc: raise CollectionError('商品提取结果无效') from exc
             previous = {p['product_id']:p for p in products} if load_more else {}
             before = len(products)
             if load_more: products, seen = [], set()
@@ -300,6 +441,13 @@ async def collect(config, factory=None, run_config_factory=None):
                 raise CollectionError('动态加载没有增长或丢失已有商品；未提交快照')
             logs.append({'page': index, 'status': status, 'initial_status':initial_status,
                          'items': len(products)-before if load_more else len(items)})
+            if next_link:
+                if not items: raise CollectionError(f'第 {index} 页没有提取到商品；未提交快照')
+                following = next_page_link(html, final_url, config, set(urls.values()) | {final_url})
+                if following:
+                    if index >= config.get('max_pages', 50): raise CollectionError('分页超过 max_pages 上限；未提交快照')
+                    urls[index + 1], pages = following, index + 1
+                total = len(products)
             index += 1
             if index <= pages: await asyncio.sleep(config.get('page_delay', 1.5))
         if len(products) != total: raise CollectionError('商品 ID 集合与站点声明总数不一致')

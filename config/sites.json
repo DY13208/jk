@@ -1,0 +1,211 @@
+{
+  "_comment": "Shareable site seed. Imported with INSERT OR IGNORE (existing sites are never overwritten). Notifications are off and email_to is blank on purpose: set your own recipient in the admin UI.",
+  "sites": [
+    {
+      "id": "lecomte",
+      "name": "Lecomte · Arc'teryx",
+      "url": "https://www.lecomte-alpirando.be/shop?attribute_value=729-2672",
+      "adapter": "odoo_lecomte",
+      "interval_minutes": 15,
+      "enabled": true,
+      "permission_confirmed": true,
+      "policy_note": "",
+      "adapter_config": {
+        "pagination_mode": "load_more",
+        "page_delay": 3,
+        "execution_mode": "extension"
+      },
+      "event_rules": [
+        "NEW",
+        "PRICE_DROP"
+      ],
+      "notify_enabled": false,
+      "notification_channel": "agentmail",
+      "email_to": "",
+      "webhook_env": ""
+    },
+    {
+      "id": "bergzeit_arcteryx",
+      "name": "Bergzeit FR - Arc'teryx",
+      "url": "https://www.bergzeit.fr/marques/arcteryx/?sortBy=new",
+      "adapter": "bergzeit_state",
+      "interval_minutes": 60,
+      "enabled": true,
+      "permission_confirmed": true,
+      "policy_note": "Added on the owner's request (2026-10-16). Products parsed from embedded __initialAppState; completeness checked against resultCount.",
+      "adapter_config": {
+        "page_delay": 2,
+        "max_pages": 20,
+        "execution_mode": "docker",
+        "pagination_mode": "auto"
+      },
+      "event_rules": [
+        "NEW",
+        "PRICE_DROP"
+      ],
+      "notify_enabled": false,
+      "notification_channel": "agentmail",
+      "email_to": "",
+      "webhook_env": ""
+    },
+    {
+      "id": "boardersla_arcteryx",
+      "name": "Boarders LA - Arc'teryx",
+      "url": "https://boardersla.com/collections/vendors?q=Arcteryx",
+      "adapter": "css_catalog",
+      "interval_minutes": 60,
+      "enabled": true,
+      "permission_confirmed": true,
+      "policy_note": "Added on the owner's request (2026-10-16). sort_by removed from URL because robots.txt disallows /collections/*sort_by*; ordering is irrelevant for full-catalog diffing.",
+      "adapter_config": {
+        "schema": {
+          "name": "products",
+          "baseSelector": "div.product-item[id^=\"product-\"]",
+          "baseFields": [
+            {
+              "name": "product_template_id",
+              "type": "attribute",
+              "attribute": "id"
+            }
+          ],
+          "fields": [
+            {
+              "name": "name",
+              "selector": "a.product-title",
+              "type": "text"
+            },
+            {
+              "name": "url",
+              "selector": "a.product-title",
+              "type": "attribute",
+              "attribute": "href"
+            },
+            {
+              "name": "sale_price",
+              "selector": ".price-box .special-price, .price-box .regular-product span",
+              "type": "regex",
+              "pattern": "(\\d[\\d.,\\s\\u00a0]*\\d|\\d)"
+            },
+            {
+              "name": "image",
+              "selector": "a.product-grid-image img",
+              "type": "attribute",
+              "attribute": "src"
+            },
+            {
+              "name": "original_price",
+              "selector": ".price-box .old-price",
+              "type": "regex",
+              "pattern": "(\\d[\\d.,\\s\\u00a0]*\\d|\\d)"
+            }
+          ]
+        },
+        "decimal_separator": ".",
+        "pagination_mode": "next_link",
+        "next_selector": ".infinite-scrolling a[href*=\"page=\"]:not(.disabled)",
+        "max_pages": 40,
+        "page_delay": 2,
+        "execution_mode": "docker"
+      },
+      "event_rules": [
+        "NEW",
+        "PRICE_DROP"
+      ],
+      "notify_enabled": false,
+      "notification_channel": "agentmail",
+      "email_to": "",
+      "webhook_env": ""
+    },
+    {
+      "id": "niponino_arcteryx",
+      "name": "Niponino - Arc'teryx",
+      "url": "https://www.niponino.fr/arcteryx",
+      "adapter": "css_catalog",
+      "interval_minutes": 60,
+      "enabled": true,
+      "permission_confirmed": true,
+      "policy_note": "Added on the owner's request (2026-10-16). css_catalog with next_link pagination. Uses css_http (plain HTTP, robots.txt respected) because the automated browser gets a Cloudflare JS challenge. 2026-10-16: left DISABLED - site returns HTTP 403 (Cloudflare) to every automated client from this PC's IP (Chrome, curl, urllib, even robots.txt).",
+      "adapter_config": {
+        "schema": {
+          "name": "products",
+          "baseSelector": "section.product-list__item.product-box",
+          "fields": [
+            {
+              "name": "product_template_id",
+              "selector": "a.product-box__link",
+              "type": "attribute",
+              "attribute": "href"
+            },
+            {
+              "name": "name",
+              "selector": "h3.product-box__heading",
+              "type": "text"
+            },
+            {
+              "name": "url",
+              "selector": "a.product-box__link",
+              "type": "attribute",
+              "attribute": "href"
+            },
+            {
+              "name": "sale_price",
+              "selector": "strong.price-cta__price",
+              "type": "regex",
+              "pattern": "(\\d[\\d.,\\s\\u00a0]*\\d|\\d)"
+            },
+            {
+              "name": "original_price",
+              "selector": "span.price-cta__price--old",
+              "type": "regex",
+              "pattern": "(\\d[\\d.,\\s\\u00a0]*\\d|\\d)"
+            },
+            {
+              "name": "image",
+              "selector": "img.js-lazy--product-box",
+              "type": "attribute",
+              "attribute": "data-src"
+            }
+          ]
+        },
+        "decimal_separator": ",",
+        "max_pages": 40,
+        "page_delay": 5,
+        "execution_mode": "extension",
+        "pagination_mode": "auto"
+      },
+      "event_rules": [
+        "NEW",
+        "PRICE_DROP"
+      ],
+      "notify_enabled": false,
+      "notification_channel": "weixin",
+      "email_to": "",
+      "webhook_env": ""
+    },
+    {
+      "id": "thinkempire_arcteryx",
+      "name": "Empire - Arc'teryx",
+      "url": "https://thinkempire.com/collections/arcteryx",
+      "adapter": "shopify_json",
+      "interval_minutes": 60,
+      "enabled": true,
+      "permission_confirmed": true,
+      "policy_note": "Added on the owner's request (2026-10-16). Shopify /collections/arcteryx/products.json adapter.",
+      "adapter_config": {
+        "currency": "CAD",
+        "page_delay": 2,
+        "max_pages": 20,
+        "execution_mode": "docker",
+        "pagination_mode": "auto"
+      },
+      "event_rules": [
+        "NEW",
+        "PRICE_DROP"
+      ],
+      "notify_enabled": false,
+      "notification_channel": "agentmail",
+      "email_to": "",
+      "webhook_env": ""
+    }
+  ]
+}

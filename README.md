@@ -6,6 +6,38 @@
 
 正式版本使用 **Crawl4AI 0.9.4 + 原有 diff_sqlite.py + APScheduler + SQLite + FastAPI**，提供中文 Web 管理后台。无需 EasySpider，也不再启动 changedetection.io。此前的研究、代码和回归测试保留供回溯，不参与正式 Compose 调度。
 
+
+## 克隆与完整复现（含已配置站点）
+
+仓库包含 5 个已配置站点的**配置种子** `config/sites.json`：`lecomte`、`bergzeit_arcteryx`、`boardersla_arcteryx`、`niponino_arcteryx`、`thinkempire_arcteryx`（适配器、URL、提取 schema、分页/执行模式、间隔、事件规则、合规说明）。种子**不含**任何快照、历史、令牌或密码；为避免克隆者给原作者发邮件，种子中所有站点 `notify_enabled=false`、`email_to` 为空，请在后台填写你自己的收件人后再开启通知。
+
+**前置条件**：Docker Desktop（Linux 容器）、Python 3.11+（仅宿主机脚本/扩展令牌需要）、Google Chrome 120+、Git。
+
+```powershell
+git clone https://github.com/DY13208/jk.git
+cd jk
+copy .env.monitor.example .env        # 按需填写 ADMIN_PASSWORD、SMTP/Webhook 等；不要提交 .env
+docker compose up -d --build monitor  # 首次启动的空数据库会自动导入 config/sites.json（SITES_SEED）
+```
+
+打开 http://127.0.0.1:8080/ 即可看到 5 个站点。已有数据库不会被覆盖；如需手动导入或补齐：
+
+```powershell
+docker compose exec monitor python scripts/import_sites.py            # 只新增缺失站点
+docker compose exec monitor python scripts/import_sites.py --overwrite # 用种子覆盖同 id 站点配置
+docker compose restart monitor                                       # 让调度器加载新站点
+```
+
+**Chrome 扩展（`lecomte`、`niponino_arcteryx` 使用“日常 Chrome 扩展”模式）**：
+
+1. 启动后台后生成扩展令牌配置：`python scripts/prepare_extension.py`（读取 `data/extension-worker.token`，写入被忽略的 `chrome-extension/config.local.json`）。
+2. Chrome 打开 `chrome://extensions` → 开启“开发者模式” → “加载已解压的扩展程序” → 选择 `chrome-extension/` 目录。
+3. 点击扩展图标 → **授权已配置网站**，允许访问扩展模式站点的域名。之后扩展每 30 秒向后台领取任务；浏览器关闭或电脑睡眠时不会运行。
+
+**通知 / Agent Mail**：在后台站点设置中选择通知方式并填写收件人后开启“通知”。Agent Mail CLI 的安装与登录见 [Agent Mail 说明](docs/AGENTMAIL.md)（宿主机运行 `scripts/Start-AgentMail.ps1`）；SMTP、企业微信、pushplus 等令牌只放在 `.env`。
+
+**说明**：首次成功采集只建立基线，不会发送“新品”通知；`niponino.fr` 可能对自动化访问返回 403/Cloudflare 验证，扩展模式（你自己的 Chrome）通常可通过。
+
 ## 当前状态
 
 - 用户提供的成果已从 `C:\Users\YiRan\crawl-test` 复制到本项目，源目录未删除。
@@ -137,3 +169,7 @@ This product includes software developed by UncleCode (https://x.com/unclecode) 
 ## 新版管理界面
 
 管理后台复用 Tabler 1.6.1 和 Tabler Icons，资源本地部署。详见 [界面更新及验证](docs/UI_REDESIGN.md)。Agent Mail CLI 接入与用户配置见 [Agent Mail 说明](docs/AGENTMAIL.md)。
+
+个人微信通知已支持 pushplus，配置步骤见 [docs/PUSHPLUS.md](docs/PUSHPLUS.md)。
+
+微信扫码直连（腾讯 ClawBot），无需公众号或 pushplus Token，见 [docs/WEIXIN.md](docs/WEIXIN.md)。

@@ -1,0 +1,1 @@
+{"name":"catalog-weixin-bridge","private":true,"type":"module","dependencies":{"@tencent-weixin/openclaw-weixin":"2.4.10","openclaw":"2026.10.4","qrcode":"1.5.4"}}

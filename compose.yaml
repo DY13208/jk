@@ -1,4 +1,18 @@
 services:
+  weixin-bridge:
+    build: ./weixin-bridge
+    init: true
+    restart: unless-stopped
+    environment:
+      OPENCLAW_STATE_DIR: /state
+    volumes:
+      - weixin-state:/state
+      - ./data/weixin-bridge.token:/run/bridge.token:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
   monitor:
     build: .
     init: false # tini supervises uvicorn and Xvfb in the image
@@ -8,6 +22,7 @@ services:
       - ./data:/app/data
     environment:
       DB_PATH: /app/data/snapshots.db
+      SITES_SEED: /app/config/sites.json
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       WECOM_LECOMTE_WEBHOOK: ${WECOM_LECOMTE_WEBHOOK:-}
@@ -18,6 +33,8 @@ services:
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
+      PUSHPLUS_LECOMTE_TOKEN: ${PUSHPLUS_LECOMTE_TOKEN:-}
+      PUSHPLUS_SITE2_TOKEN: ${PUSHPLUS_SITE2_TOKEN:-}
     shm_size: 1gb
     restart: unless-stopped
     stop_grace_period: 40s
@@ -31,3 +48,5 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+volumes:
+  weixin-state:

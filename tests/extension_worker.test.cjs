@@ -21,9 +21,9 @@ const chrome = {
     }
   },
   runtime:{onStartup:listener,onInstalled:listener,onMessage:listener},
-  alarms:{onAlarm:listener,get:async()=>({}),create:async()=>{}}
+  alarms:{onAlarm:listener,get:async()=>({}),create:async()=>{},clear:async()=>true}
 };
-const ctx = vm.createContext({chrome,URL,AbortSignal,importScripts(){},setTimeout});
+const ctx = vm.createContext({chrome,URL,AbortSignal,importScripts(){},setTimeout,clearTimeout});
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../chrome-extension/worker.js'),'utf8'),ctx);
 (async()=>{
   const target=tabUrl;
@@ -75,11 +75,34 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../chrome-extension/worker.
   getError=Error('No tab with id: 6');await ctx.cleanupIdleTabs();assert.equal(state.ownedTabs['6'],undefined);
   getError=null;
 
+  // Expired task pages close independently of the busy flag and active job heartbeat.
+  state.active={id:'stuck',started:Date.now()};
+  state.ownedTabs={'7':{id:7,url:target,expires:Date.now()-1},'8':{id:8,url:target,expires:Date.now()+60000}};
+  vm.runInContext('busy=true',ctx);
+  await ctx.cleanupExpiredTabs();
+  assert.ok(removed.includes(7));assert.ok(!removed.includes(8));
+  delete state.active;state.ownedTabs={};vm.runInContext('busy=false',ctx);
+
+  // A page script that never settles must still hit the finally cleanup path.
+  ctx.setTimeout=fn=>setTimeout(fn,5);
+  chrome.scripting.executeScript=()=>new Promise(()=>{});
+  await assert.rejects(()=>ctx.collect(site),/超时/);
+  assert.equal(removed.at(-1),100);assert.equal(state.ownedTabs['100'],undefined);
+  ctx.setTimeout=setTimeout;
+
+  chrome.permissions={contains:async()=>true};ctx.capturePage=function(){};
+  chrome.scripting.executeScript=async()=>[{result:{html:'<main>fixture</main>',url:target,next:null}}];
+  await ctx.collect({adapter:'css_catalog',url:target,adapter_config:{}});
+  assert.equal(removed.at(-1),100);assert.equal(state.ownedTabs['100'],undefined);
+  chrome.scripting.executeScript=async()=>{throw Error('generic capture failed');};
+  await assert.rejects(()=>ctx.collect({adapter:'css_catalog',url:target,adapter_config:{}}),/generic capture failed/);
+  assert.equal(removed.at(-1),100);assert.equal(state.ownedTabs['100'],undefined);
+
   // Transport failures keep the original result; they never rerun collection.
   state.delivery={id:'job',claim:'test-only',result:{error:'stopped'}};state.active={id:'job'};
   ctx.api=async()=>{const e=Error('network unavailable');e.status=503;throw e;};
   await assert.rejects(()=>ctx.flush());assert.ok(state.delivery);
   ctx.api=async()=>{const e=Error('already accepted');e.status=409;throw e;};
   await ctx.flush();assert.equal(state.delivery,undefined);assert.equal(state.active,undefined);
-  console.log('PASS: owned-tab redirects and hidden URLs, success/failure cleanup, unrelated tabs untouched, retry retention, offline cleanup, interrupted/active tasks, legacy migration, delivery retry');
+  console.log('PASS: owned-tab redirects and hidden URLs, Odoo/generic success/failure cleanup, independent expiry while busy, script timeout, unrelated tabs untouched, retry retention, offline cleanup, interrupted/active tasks, legacy migration, delivery retry');
 })().catch(e=>{console.error(e);process.exitCode=1;});

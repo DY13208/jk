@@ -17,6 +17,30 @@ EVENTS = ['NEW', 'REMOVED', 'RETURNED', 'PRICE_DROP', 'PRICE_RISE']
 
 
 def now(): return datetime.now(timezone.utc).isoformat()
+
+
+SITE_FIELDS = ('id','name','url','adapter','interval_minutes','enabled','permission_confirmed','policy_note',
+               'adapter_config','event_rules','notify_enabled','webhook_env','notification_channel','email_to')
+
+
+def import_sites(db, path, overwrite=False):
+    """Import a shareable site seed (config/sites.json). Existing sites are kept unless overwrite=True.
+    Only configuration is imported; snapshots/history never are."""
+    document = json.loads(Path(path).read_text(encoding='utf-8'))
+    added = []
+    for site in document.get('sites', []):
+        row = {k: site.get(k) for k in SITE_FIELDS}
+        row['adapter_config'] = encode(row['adapter_config'] or {})
+        row['event_rules'] = encode(row['event_rules'] or EVENTS)
+        for k in ('enabled','permission_confirmed','notify_enabled'): row[k] = int(bool(row[k]))
+        row['interval_minutes'] = int(row['interval_minutes'] or 15)
+        for k in ('policy_note','webhook_env','email_to'): row[k] = row[k] or ''
+        row['notification_channel'] = row['notification_channel'] or 'wecom'
+        verb = 'INSERT OR REPLACE' if overwrite else 'INSERT OR IGNORE'
+        cur = db.execute(f"{verb} INTO monitor_sites({','.join(SITE_FIELDS)},created_at) VALUES({','.join('?'*len(SITE_FIELDS))},?)",
+                         [row[k] for k in SITE_FIELDS] + [now()])
+        if cur.rowcount: added.append(row['id'])
+    return added
 def encode(value): return json.dumps(value, ensure_ascii=False)
 
 
@@ -115,10 +139,12 @@ class Database:
             columns = {r['name'] for r in db.execute('PRAGMA table_info(monitor_sites)')}
             for column, definition in [('notification_channel', "TEXT NOT NULL DEFAULT 'wecom'"), ('email_to', "TEXT NOT NULL DEFAULT ''")]:
                 if column not in columns: db.execute(f'ALTER TABLE monitor_sites ADD COLUMN {column} {definition}')
+            seed = os.getenv('SITES_SEED')
+            # Fresh databases only, so sites the owner later deletes are not resurrected on restart.
+            if seed and Path(seed).is_file() and not db.execute('SELECT 1 FROM monitor_sites LIMIT 1').fetchone():
+                import_sites(db, Path(seed))
             db.execute('INSERT OR IGNORE INTO monitor_sites(id,name,url,adapter,event_rules,created_at) VALUES(?,?,?,?,?,?)',
                 ('lecomte', "Lecomte · Arc'teryx", START, 'odoo_lecomte', encode(EVENTS), now()))
-            db.execute('INSERT OR IGNORE INTO monitor_sites(id,name,url,adapter,event_rules,created_at) VALUES(?,?,?,?,?,?)',
-                ('site2', '网站 2 · 待配置', '', 'css_catalog', encode(EVENTS), now()))
             imported = db.execute("SELECT value FROM monitor_meta WHERE key='legacy_imported'").fetchone()
             if not imported:
                 # Verify actual saved page evidence; never promote EasySpider partial runs.
@@ -171,6 +197,12 @@ class Database:
         for key in ('adapter_config', 'event_rules'): site[key] = json.loads(site[key])
         for key in ('enabled', 'permission_confirmed', 'notify_enabled'): site[key] = bool(site[key])
         site['webhook_configured'] = bool(site['webhook_env'] and os.getenv(site['webhook_env']))
+        from .pushplus import token
+        try:
+            token(site)
+            site['pushplus_configured'] = True
+        except ValueError:
+            site['pushplus_configured'] = False
         from .email_delivery import configuration
         try:
             configuration(site)

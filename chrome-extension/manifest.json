@@ -2,10 +2,38 @@
   "manifest_version": 3,
   "minimum_chrome_version": "120",
   "name": "商品监控 · 日常 Chrome 采集",
-  "version": "1.0.2",
+  "version": "1.2.1",
   "description": "使用当前普通 Chrome 的网站会话采集公开商品目录，交给本机监控后台校验和比对。",
-  "permissions": ["scripting", "storage", "alarms"],
-  "host_permissions": ["http://127.0.0.1:8080/*", "https://www.lecomte-alpirando.be/*"],
-  "background": {"service_worker": "worker.js"},
-  "action": {"default_popup": "popup.html"}
+  "permissions": [
+    "scripting",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8080/*",
+    "https://www.lecomte-alpirando.be/*"
+  ],
+  "background": {
+    "service_worker": "worker.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "商品采集"
+  },
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
 }

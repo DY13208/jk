@@ -13,3 +13,18 @@ chrome-extension/config.local.json
 dist/
 release.json
 .ui-vendor/
+
+# local backups, secrets, scratch
+*.bak
+*.bak[0-9]*
+*.bak-*
+*.token
+*.db
+*.db-wal
+*.db-shm
+.env.*
+!.env*.example
+!.env.example
+node_modules/
+crawl_once.py
+

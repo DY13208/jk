@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {usable,acceptMessages} from './core.mjs';
+const now=Date.now();let state={};
+assert.equal(usable(state),false);
+acceptMessages(state,{msgs:[{from_user_id:'other',message_type:1,context_token:'private',create_time_ms:now}]},'owner',now);
+assert.equal(usable(state),false);
+acceptMessages(state,{msgs:[{from_user_id:'owner',message_type:1,context_token:'private',create_time_ms:now}],get_updates_buf:'cursor'},'owner',now);
+assert.equal(usable(state,now),true);
+state.used=9;assert.equal(usable(state,now),false);
+acceptMessages(state,{msgs:[{from_user_id:'owner',message_type:1,context_token:'private',create_time_ms:now}]},'owner',now);
+assert.equal(state.used,9);
+state.used=0;assert.equal(usable(state,now+24*3600000),false);
+assert.equal(state.cursor,'cursor');
+console.log('PASS: bound-user isolation, activation, conservative expiry and turn limit');

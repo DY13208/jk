@@ -1,0 +1,2 @@
+# Explicit optional-image dependency, installed after the cached crawler/browser layer.
+Pillow==12.3.0

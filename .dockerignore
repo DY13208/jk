@@ -14,3 +14,5 @@ dist
 .ui-vendor
 !admin/vendor/
 !admin/vendor/**
+
+**/*.bak*

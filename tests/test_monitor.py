@@ -32,7 +32,12 @@ def document(products, started=None):
 
 @pytest.fixture
 def db(tmp_path):
-    value=Database(tmp_path/'snapshots.db'); value.migrate(); return value
+    value=Database(tmp_path/'snapshots.db'); value.migrate()
+    # A second, disabled site for multi-site tests (no longer seeded by migrate()).
+    with value.connect() as c:
+        c.execute('INSERT INTO monitor_sites(id,name,url,adapter,event_rules,created_at) VALUES(?,?,?,?,?,?)',
+            ('site2','Site 2','','css_catalog',json.dumps(EVENTS),'2026-01-01T00:00:00+00:00'))
+    return value
 
 
 def enable(db, site_id='lecomte', notify=False):
@@ -261,6 +266,7 @@ def test_admin_routes_permission_csrf_and_config(tmp_path,monkeypatch):
         assert client.put('/api/sites/lecomte',json=site,headers={'Origin':'https://evil.test'}).status_code==403
         assert client.put('/api/sites/lecomte',json=site).status_code==200
         assert client.post('/api/backups').status_code==200
+        assert client.put('/api/sites/site2',json={'id':'site2','name':'Site 2','adapter':'css_catalog'}).status_code==200
         assert client.post('/api/sites/site2/run').status_code==409
 
 

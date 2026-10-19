@@ -12,6 +12,9 @@ from .database import now, run_summary
 from .email_delivery import configuration, build_email, send_email
 
 from .mail_templates import LABELS, message
+from . import pushplus
+from . import weixin
+from . import product_images
 
 
 def webhook(site):
@@ -56,12 +59,22 @@ class Notifier:
                     if not site['notify_enabled']: raise ValueError('通知已关闭')
                     if site.get('notification_channel') == 'email':
                         configuration(site)
+                    elif site.get('notification_channel') == 'pushplus':
+                        pushplus.token(site)
+                    elif site.get('notification_channel') == 'weixin':
+                        pass  # Credentials are kept only inside the isolated official bridge.
                     else:
                         url = webhook(site)
                 except ValueError as exc:
                     self.finish(row['id'], 'held', str(exc)); continue
                 try:
                     content = message(site, event)
+                    if site.get('notification_channel') == 'weixin':
+                        await self.deliver_weixin(row,content,event)
+                        continue
+                    if site.get('notification_channel') == 'pushplus':
+                        await self.deliver_pushplus(row, site, content)
+                        continue
                     if site.get('notification_channel') == 'email':
                         await self.deliver_email(row, site, event, content)
                         continue
@@ -101,6 +114,59 @@ class Notifier:
             self.finish(row['id'], 'held', 'SMTP 连接、加密或证书配置错误，请核对设置')
         except Exception:
             self.finish(row['id'], 'uncertain', '邮件发送结果不确定，请核对收件箱后再重试')
+
+    async def deliver_pushplus(self, row, site, content):
+        # Persistent, conservative global spacing also protects accounts shared by sites.
+        with self.db.connect() as conn:
+            last = conn.execute("SELECT MAX(o.claimed_at) FROM monitor_outbox o JOIN monitor_sites s ON s.id=o.site_id WHERE s.notification_channel='pushplus' AND o.id!=? AND o.status IN ('sent','uncertain')", (row['id'],)).fetchone()[0]
+            if last and time.time() - last < 15:
+                conn.execute("UPDATE monitor_outbox SET status='pending',next_at=?,attempts=attempts-1 WHERE id=?", (last+15,row['id']))
+                return
+        try:
+            response = await self.sender(pushplus.ENDPOINT, {
+                'token':pushplus.token(site), 'title':content.splitlines()[0][:100],
+                'content':content, 'template':'txt', 'channel':'wechat'})
+            if response.status_code == 429:
+                self.retry(row, 'pushplus 请求限流'); return
+            if response.status_code != 200:
+                self.finish(row['id'], 'uncertain', f'pushplus HTTP {response.status_code}，请核对消息记录'); return
+            code = response.json().get('code')
+            if code == 200:
+                self.finish(row['id'], 'sent', 'pushplus 已接受请求，非微信送达确认；最终状态请核对 pushplus 消息记录')
+            else:
+                # Do not persist provider text: it may echo a credential or message.
+                self.finish(row['id'], 'held', 'pushplus 拒绝请求，请核对 Token、实名状态及额度')
+        except httpx.ConnectError:
+            self.retry(row, '无法连接 pushplus')
+        except Exception:
+            self.finish(row['id'], 'uncertain', 'pushplus 接收结果不确定，请核对消息记录后再重试')
+
+    async def deliver_weixin(self,row,content,event=None):
+        state=await weixin.status(self.db)
+        if not state.get('ready'):
+            # No send was attempted: wait for login/activation without burning attempts.
+            with self.db.connect() as conn:
+                conn.execute("UPDATE monitor_outbox SET status='pending',next_at=?,attempts=attempts-1,last_error=? WHERE id=?",(time.time()+60,'等待微信扫码连接或主动对话激活',row['id']))
+            return
+        if len(content)>3500:
+            self.finish(row['id'],'held','微信文本过长，请在后台查看商品详情');return
+        image_url=((event or {}).get('payload') or {}).get('product',{}).get('image')
+        image=await product_images.attachment(image_url)
+        try:
+            result=await weixin.request(self.db,'send',{'text':content,**({'image':image} if image else {})})
+            if result.get('ok') is True:
+                picture=('；图片接口已接受' if result.get('image_status')=='accepted' else
+                         '；图片未确认，不自动重发文字' if image else
+                         '；图片不可用，已降级为文字' if image_url else '')
+                self.finish(row['id'],'sent','腾讯微信文字接口已接受'+picture+'；最终送达请在微信核对')
+            else: self.finish(row['id'],'uncertain','微信发送结果不确定，请核对后重试')
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code==409:
+                with self.db.connect() as conn:
+                    conn.execute("UPDATE monitor_outbox SET status='pending',next_at=?,attempts=attempts-1 WHERE id=?",(time.time()+60,row['id']))
+            else: self.finish(row['id'],'uncertain','微信接口未确认发送结果，请核对后重试')
+        except Exception:
+            self.finish(row['id'],'uncertain','微信发送结果不确定，请核对后重试')
 
     def retry(self, row, reason):
         attempts = row['attempts'] + 1

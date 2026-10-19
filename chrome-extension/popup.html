@@ -1,6 +1,72 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>日常 Chrome 商品采集</title>
-<style>body{width:320px;padding:16px;font:14px system-ui;color:#1f3430}h1{font-size:18px}button,select{width:100%;padding:10px;margin-top:10px}p{line-height:1.6}small{color:#63746f}</style>
-<h1>日常 Chrome 商品采集</h1><p id="status">正在检查连接…</p><small id="updated"></small>
-<select id="site" aria-label="测试网站"></select><button id="verify">完整采集测试（不写入快照）</button><button id="poll">检查后台任务</button><button id="cleanup">清理遗留采集页</button>
-<p>仅读取公开商品卡片，不读取 Cookie。浏览器关闭或电脑睡眠时不会运行。</p><a href="http://127.0.0.1:8080/" target="_blank">打开监控后台</a>
-<script src="popup.js"></script></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>商品采集</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+    <symbol id="i-loader" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol>
+    <symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></symbol>
+    <symbol id="i-idle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/></symbol>
+  </defs>
+</svg>
+
+<header class="header">
+  <img class="logo" src="icons/logo.svg" width="28" height="28" alt="">
+  <div class="brand"><h1>商品采集</h1><p>商品监测 · 自动采集</p></div>
+  <button id="settings" class="icon-btn" type="button" title="打开监控后台设置" aria-label="打开监控后台设置"><svg class="i"><use href="#i-settings"/></svg></button>
+</header>
+
+<section id="status-card" class="status" data-state="idle" aria-live="polite">
+  <div class="status-icon" aria-hidden="true"><svg class="i"><use id="status-icon" href="#i-idle"/></svg></div>
+  <div class="status-body">
+    <div class="status-line"><span id="state-label" class="state-label">空闲</span><span id="task" class="task"></span></div>
+    <p id="status" class="status-text">正在检查连接…</p>
+    <div class="status-meta"><span id="updated"></span><span id="progress"></span><button id="reason-toggle" class="link-btn" type="button" hidden aria-expanded="false" aria-controls="reason">查看原因</button></div>
+  </div>
+  <div id="reason" class="reason" role="dialog" aria-label="失败原因" hidden><p id="reason-text"></p></div>
+</section>
+
+<label class="select-wrap" for="site">
+  <svg class="i lead"><use href="#i-globe"/></svg>
+  <select id="site" aria-label="测试网站"></select>
+  <svg class="i chev"><use href="#i-chevron-down"/></svg>
+</label>
+
+<button id="verify" class="primary" type="button">
+  <svg class="i play"><use href="#i-play"/></svg><svg class="i spin"><use href="#i-loader"/></svg>
+  <span class="label">完整采集测试（不写入快照）</span>
+</button>
+
+<div class="toolbar" role="toolbar" aria-label="更多操作">
+  <button id="grant" class="tool" type="button" title="为已配置为扩展模式的网站授予访问权限"><svg class="i"><use href="#i-shield-check"/></svg><span>授权已配置网站</span><span class="dot" aria-hidden="true"></span></button>
+  <button id="poll" class="tool" type="button" title="立即向后台领取任务"><svg class="i"><use href="#i-refresh"/></svg><span>检查后台任务</span></button>
+  <div class="more">
+    <button id="more" class="tool icon-only" type="button" title="更多" aria-label="更多" aria-haspopup="menu" aria-expanded="false" aria-controls="menu"><svg class="i"><use href="#i-more"/></svg></button>
+    <div id="menu" class="menu" role="menu" hidden>
+      <button id="cleanup" class="menu-item" type="button" role="menuitem"><svg class="i"><use href="#i-trash"/></svg>清理遗留采集页</button>
+    </div>
+  </div>
+</div>
+
+<footer class="footer">
+  <span class="privacy" id="extension-version"></span>
+  <a id="admin" class="admin-link" href="http://127.0.0.1:8080/" target="_blank" rel="noopener">打开监控后台<svg class="i"><use href="#i-external"/></svg></a>
+  <p class="privacy">仅读取公开商品卡片，不读取 Cookie。浏览器关闭或电脑睡眠时不会运行。</p>
+</footer>
+<script src="popup.js"></script>
+</body>
+</html>

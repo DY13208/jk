@@ -83,9 +83,14 @@ def finish(db,body,mode='host'):
             raise LookupError('任务运行方式不一致')
         site=db.site(row['site_id'])
         if not site or not site['enabled'] or not site['permission_confirmed']: raise LookupError('网站已暂停')
-        if 'capture' in result:
-            from .extension_capture import normalize
-            result={'document':normalize(json.loads(row['payload']),result['capture'])}
-        if 'document' in result: db.validate(result['document'])
+        try:
+            if 'capture' in result:
+                from .extension_capture import normalize
+                result={'document':normalize(json.loads(row['payload']),result['capture'])}
+            if 'document' in result: db.validate(result['document'])
+        except ValueError as exc:
+            # The delivery reached us. A failed completeness check is a terminal collection
+            # failure, not a transport error that can be fixed by resending identical HTML.
+            result={'error':str(exc)[:250],'status':getattr(exc,'status',None)}
         c.execute("UPDATE monitor_host_jobs SET status='done',result=? WHERE id=?",(json.dumps(result,ensure_ascii=False),row['id']))
-    return {'ok':True}
+    return {'ok':True,**({'rejected':True,'error':result['error']} if 'error' in result else {})}

@@ -1,10 +1,12 @@
 """Parse public catalogue DOM with the existing Crawl4AI schema and Odoo ID rules."""
 from datetime import datetime,timezone
-from crawl4ai_run.run_crawl4ai import schema,clean,pagination,access_control_page,CollectionError
+from urllib.parse import urlsplit
+from crawl4ai_run.run_crawl4ai import schema,clean,pagination,access_control_page,CollectionError,auto_schema
 
 
 def normalize(site,capture):
     from crawl4ai import JsonCssExtractionStrategy
+    if site['adapter']!='odoo_lecomte': return normalize_pages(site,capture)
     checkpoints=capture.get('checkpoints',[]) if isinstance(capture,dict) else []
     if not 1<=len(checkpoints)<=200: raise CollectionError('扩展缺少完整分页检查点')
     options=site['adapter_config']
@@ -39,3 +41,33 @@ def normalize(site,capture):
     return {'meta':{'tool':'crawl4ai-extension','started':stamp,'ended':stamp,'complete':True,
                     'site_total':total,'site_pages':pages,'extracted':len(previous),'pages':logs},
             'products':list(previous.values())}
+
+
+def normalize_pages(site,capture):
+    """Generic sites: one sanitized page DOM per listing page (next-link / ?page=N / load-more handled by the
+    extension). Uses the site's schema, or a heuristic schema derived from page 1."""
+    from crawl4ai import JsonCssExtractionStrategy
+    checkpoints=capture.get('checkpoints',[]) if isinstance(capture,dict) else []
+    if not 1<=len(checkpoints)<=200: raise CollectionError('扩展缺少完整分页快照')
+    options=site['adapter_config'];host=urlsplit(site['url']).netloc
+    extraction=None;products={};logs=[]
+    for index,checkpoint in enumerate(checkpoints,1):
+        html=checkpoint.get('html','');page_url=str(checkpoint.get('url') or site['url'])
+        if not isinstance(html,str) or len(html)>4_000_000: raise CollectionError('扩展结果格式或大小无效')
+        if checkpoint.get('page')!=index: raise CollectionError('扩展分页顺序或页码不连续')
+        if urlsplit(page_url).netloc!=host: raise CollectionError('扩展分页离开了配置的网站')
+        if access_control_page(html): raise CollectionError('扩展遇到访问验证页面；任务已暂停',403)
+        # Auto schema is derived per page so sale-only fields (old price) are found wherever they appear.
+        extraction=JsonCssExtractionStrategy(options.get('schema') or auto_schema(html,page_url))
+        items=extraction.extract(page_url,html)
+        if not items: raise CollectionError(f'扩展第 {index} 页没有提取到商品')
+        for raw in items:
+            product=clean(raw,index,site['url'],odoo=False,decimal_separator=options.get('decimal_separator','auto'))
+            if product['product_id'] in products: raise CollectionError('扩展翻页中出现重复商品 ID')
+            if not product['name'] or product['sale_price'] is None: raise CollectionError('商品名称或价格缺失')
+            products[product['product_id']]=product
+        logs.append({'page':index,'status':200,'items':len(items)})
+    stamp=datetime.now(timezone.utc).isoformat()
+    return {'meta':{'tool':'crawl4ai-extension','started':stamp,'ended':stamp,'complete':True,
+                    'site_total':len(products),'site_pages':len(logs),'extracted':len(products),'pages':logs},
+            'products':list(products.values())}
