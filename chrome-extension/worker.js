@@ -113,11 +113,21 @@ async function collectGeneric(site) {
     for (let page = 1; page <= maxPages; page++) {
       await waitComplete(tab.id);
       await message('正在完整采集：' + site.id + ' · 第 ' + page + ' 页', 'running', site.id, {page});
-      const results = await executeCapture({target: {tabId: tab.id}, func: capturePage,
-        args: [{origin, visited}]});
-      const result = results[0]?.result;
+      const baseSelector = cfg.schema?.baseSelector || null;
+      let results = await executeCapture({target: {tabId: tab.id}, func: capturePage,
+        args: [{origin, visited, baseSelector}]});
+      let result = results[0]?.result;
+      if (result && result.cards === 0) {
+        // Card selector known but nothing rendered: reload once (slow render / interrupted load) before giving up.
+        await chrome.tabs.reload(tab.id);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        await waitComplete(tab.id);
+        results = await executeCapture({target: {tabId: tab.id}, func: capturePage,
+          args: [{origin, visited, baseSelector}]});
+        result = results[0]?.result;
+      }
       if (!result?.html) throw Error('采集没有返回页面内容');
-      checkpoints.push({page, url: result.url, html: result.html});
+      checkpoints.push({page, url: result.url, html: result.html, cards: result.cards, title: result.title});
       visited.push(result.url);
       if (!result.next || visited.includes(result.next)) return {checkpoints};
       if (new URL(result.next).origin !== origin) throw Error('分页跳转到其他网站');

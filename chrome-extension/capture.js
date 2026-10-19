@@ -62,7 +62,15 @@ async function capturePage(settings) {
       throw Error('ACCESS_DENIED:网站要求访问验证，请在浏览器中手动处理');
   };
   for (let i = 0; i < 40 && document.readyState !== 'complete'; i++) await sleep(250);
+  // Cloudflare/bot challenge: give a real browser up to ~25 s to pass it on its own, then report it explicitly.
+  const challenged = () => /^(just a moment|un instant|attention required|checking your browser|vérification)/i.test(document.title.trim())
+    || !!document.querySelector('#challenge-form, #challenge-running, #cf-challenge-running, .cf-turnstile, iframe[src*="challenges.cloudflare.com"], script[src*="/cdn-cgi/challenge-platform/h/"]');
+  for (let i = 0; i < 50 && challenged(); i++) await sleep(500);
+  if (challenged()) throw Error('ACCESS_DENIED:网站显示 Cloudflare 人机验证页面（不是空列表），请在浏览器中打开该网站手动完成验证');
   check();
+  // Wait for product cards (client-rendered / lazy grids) when the site's card selector is known.
+  const cardCount = () => { try { return settings.baseSelector ? document.querySelectorAll(settings.baseSelector).length : -1; } catch { return -1; } };
+  for (let i = 0; i < 60 && cardCount() === 0; i++) await sleep(250);
   // Popups (cookie consent, newsletter, promo): prefer reject/close, never submit forms or sign up.
   // Product data is read from the DOM either way; this only keeps next/load-more controls clickable.
   const dismissOverlays = async () => {
@@ -89,6 +97,8 @@ async function capturePage(settings) {
       const r = el.getBoundingClientRect();
       if (r.width * r.height < 0.5 * innerWidth * innerHeight) continue;
       if (el.querySelectorAll('a[href]').length > 20) continue;
+      // Never hide anything that holds (or is) product cards.
+      try { if (settings.baseSelector && (el.matches(settings.baseSelector) || el.querySelector(settings.baseSelector))) continue; } catch {}
       el.style.setProperty('display', 'none', 'important');
     }
     document.documentElement.style.removeProperty('overflow'); document.body.style.removeProperty('overflow');
@@ -135,5 +145,5 @@ async function capturePage(settings) {
   const rels = [...document.querySelectorAll('link[rel=next]')].map(l => `<link rel="next" href="${l.href.replace(/"/g, '')}">`).join('');
   const html = '<html><head><title>' + document.title.replace(/</g, '') + '</title>' + rels + '</head>' + clone.outerHTML + '</html>';
   if (html.length > 3800000) throw Error('页面过大，无法安全回传');
-  return {html, url: location.href.split('#')[0], next};
+  return {html, url: location.href.split('#')[0], next, cards: cardCount(), title: document.title.slice(0, 200)};
 }

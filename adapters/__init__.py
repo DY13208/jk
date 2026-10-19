@@ -120,43 +120,62 @@ def collect_bergzeit(url, config, fetch=None):
         found = re.search(r'\d[\d.\s\u00a0]*,\d{2}|\d+', text or '')
         return money(found.group(0), ',') if found else None
     started, clock = datetime.now(timezone.utc).isoformat(), time.monotonic()
-    products, seen, logs, total = [], set(), [], None
     query = [(k, v) for k, v in parse_qsl(parts.query) if k != 'p']
-    for page in range(1, config.get('max_pages', 50) + 1):
-        target = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query + [('p', str(page))]), ''))
-        status, html = fetch(target)
-        if status in (403, 429): raise CollectionError(f'站点拒绝访问 HTTP {status}；任务已暂停', status)
-        if status != 200: raise CollectionError(f'第 {page} 页请求失败（HTTP {status}）；未提交快照', status)
-        try:
-            count = int(re.search(r'resultCount:\s*(\d+)', html).group(1))
-            start = html.index('elementsList: ') + len('elementsList: ')
-            elements, _ = json.JSONDecoder().raw_decode(html, start)
-        except Exception as exc:
-            raise CollectionError('页面缺少商品数据（__initialAppState）；未提交快照') from exc
-        if total is None: total = count
-        elif count != total: raise CollectionError('采集期间站点商品总数发生变化')
-        items = [e['data'] for e in elements if e.get('type') == 'product']
-        for d in items:
-            pid = str(d.get('id') or '')
-            if not pid or pid in seen: raise CollectionError('翻页中出现重复或缺失商品 ID，可能发生列表移动')
-            info = d.get('price') or {}
-            images = d.get('images') or []
-            seen.add(pid)
-            products.append({'product_id': pid, 'product_variant_id': d.get('itemId'), 'slug_id': None,
-                'name': (d.get('name') or '').strip(), 'brand': (d.get('brand') or {}).get('name'),
-                'sale_price': price(info.get('current')),
-                'original_price': price(info.get('old')) if info.get('isOldPrice') else None,
-                'currency': 'EUR', 'discount': f"-{info['savedPercentage']}%" if info.get('savedPercentage') else None,
-                'label': 'NEW' if d.get('isNew') else None,
-                'url': urljoin(base, (d.get('url') or '').split('#')[0]), 'listing_page': page, 'sku': d.get('itemId'),
-                'stock': 'UNKNOWN', 'image': images[0].get('src') if images else None})
-        logs.append({'page': page, 'status': 200, 'initial_status': 200, 'items': len(items)})
-        if len(products) >= total or not items: break
-        time.sleep(config.get('page_delay', 1.5))
-    if not products or len(products) != total:
-        raise CollectionError(f'商品数 {len(products)} 与站点总数 {total} 不一致；未提交快照')
+    tolerance = int(config.get('total_tolerance', 1))
+    def get(target):
+        # Transient empty/5xx answers are retried once; 403/429 stop immediately (pause semantics).
+        for attempt in range(2):
+            status, html = fetch(target)
+            if status in (403, 429): raise CollectionError(f'站点拒绝访问 HTTP {status}；任务已暂停', status)
+            if status == 200 and 'elementsList: ' in html: return html
+            if attempt == 0: time.sleep(max(3, config.get('page_delay', 1.5)))
+        raise CollectionError(f'页面请求失败或缺少商品数据（HTTP {status}）；未提交快照', status)
+    def crawl():
+        products, logs, counts = {}, [], []
+        for page in range(1, config.get('max_pages', 50) + 1):
+            target = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query + [('p', str(page))]), ''))
+            html = get(target)
+            try:
+                counts.append(int(re.search(r'resultCount:\s*(\d+)', html).group(1)))
+                start = html.index('elementsList: ') + len('elementsList: ')
+                elements, _ = json.JSONDecoder().raw_decode(html, start)
+            except Exception as exc:
+                raise CollectionError('页面缺少商品数据（__initialAppState）；未提交快照') from exc
+            items = [e['data'] for e in elements if e.get('type') == 'product']
+            fresh = 0
+            for d in items:
+                pid = str(d.get('id') or '')
+                if not pid: raise CollectionError('商品 ID 缺失；未提交快照')
+                if pid in products: continue  # list shifted between pages: keep the first occurrence
+                info = d.get('price') or {}
+                images = d.get('images') or []
+                products[pid] = {'product_id': pid, 'product_variant_id': d.get('itemId'), 'slug_id': None,
+                    'name': (d.get('name') or '').strip(), 'brand': (d.get('brand') or {}).get('name'),
+                    'sale_price': price(info.get('current')),
+                    'original_price': price(info.get('old')) if info.get('isOldPrice') else None,
+                    'currency': 'EUR', 'discount': f"-{info['savedPercentage']}%" if info.get('savedPercentage') else None,
+                    'label': 'NEW' if d.get('isNew') else None,
+                    'url': urljoin(base, (d.get('url') or '').split('#')[0]), 'listing_page': page, 'sku': d.get('itemId'),
+                    'stock': 'UNKNOWN', 'image': images[0].get('src') if images else None}
+                fresh += 1
+            logs.append({'page': page, 'status': 200, 'initial_status': 200, 'items': fresh})
+            if not items or len(products) >= counts[-1]: break
+            time.sleep(config.get('page_delay', 1.5))
+        return products, logs, counts
+    problems = []
+    for attempt in range(int(config.get('attempts', 3))):
+        products, logs, counts = crawl()
+        final = counts[-1] if counts else 0
+        stable = max(counts) - min(counts) <= tolerance if counts else False
+        if products and stable and abs(len(products) - final) <= tolerance: break
+        problems.append(f'第 {attempt + 1} 次：采集 {len(products)} / 站点总数 {sorted(set(counts))}')
+        time.sleep(max(5, config.get('page_delay', 1.5)))
+    else:
+        raise CollectionError('采集期间站点商品总数持续变化（' + '；'.join(problems) + '）；未提交快照，避免误报下架')
+    products = list(products.values())
     return {'meta': {'tool': 'bergzeit_state', 'started': started, 'ended': datetime.now(timezone.utc).isoformat(),
-        'duration_s': round(time.monotonic() - clock, 2), 'site_total': total, 'site_pages': len(logs),
+        'duration_s': round(time.monotonic() - clock, 2), 'site_total': len(products), 'reported_total': final,
+        'reported_totals': counts, 'attempts': len(problems) + 1, 'site_pages': len(logs),
         'extracted': len(products), 'pages': logs, 'complete': True}, 'products': products}
 
 

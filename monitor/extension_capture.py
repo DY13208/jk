@@ -1,4 +1,5 @@
 """Parse public catalogue DOM with the existing Crawl4AI schema and Odoo ID rules."""
+import re
 from datetime import datetime,timezone
 from urllib.parse import urlsplit
 from crawl4ai_run.run_crawl4ai import schema,clean,pagination,access_control_page,CollectionError,auto_schema
@@ -57,10 +58,16 @@ def normalize_pages(site,capture):
         if checkpoint.get('page')!=index: raise CollectionError('扩展分页顺序或页码不连续')
         if urlsplit(page_url).netloc!=host: raise CollectionError('扩展分页离开了配置的网站')
         if access_control_page(html): raise CollectionError('扩展遇到访问验证页面；任务已暂停',403)
+        title=str(checkpoint.get('title') or '')
+        if re.search(r'^(just a moment|un instant|attention required|checking your browser|verify you are human|vérification)',title.strip(),re.I):
+            raise CollectionError(f'扩展第 {index} 页是 Cloudflare 人机验证页面（标题：{title[:60]}）；请在 Chrome 中打开该网站手动完成验证',403)
         # Auto schema is derived per page so sale-only fields (old price) are found wherever they appear.
         extraction=JsonCssExtractionStrategy(options.get('schema') or auto_schema(html,page_url))
         items=extraction.extract(page_url,html)
-        if not items: raise CollectionError(f'扩展第 {index} 页没有提取到商品')
+        if not items:
+            cards=checkpoint.get('cards')
+            detail=f'页面已加载（标题：{title[:60]}），商品卡片选择器匹配 {cards} 个' if cards is not None else '页面已加载但未识别到商品卡片'
+            raise CollectionError(f'扩展第 {index} 页没有提取到商品：{detail}；可能是网站改版或页面未渲染完成')
         for raw in items:
             product=clean(raw,index,site['url'],odoo=False,decimal_separator=options.get('decimal_separator','auto'))
             if product['product_id'] in products: raise CollectionError('扩展翻页中出现重复商品 ID')
