@@ -138,16 +138,32 @@ nav a.active::before{content:"";position:absolute;left:-18px;top:8px;bottom:8px;
 @media(max-width:760px){.events-page .ev-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 /* ===== 通知投递队列 filter card (scoped to .deliveries-page) ===== */
-.deliveries-page .dq-filters{border-color:#e7ebee;border-radius:12px;padding:20px;margin-bottom:22px}
-.deliveries-page .dq-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;gap:20px;align-items:center}
-.deliveries-page .dq-group{display:flex;align-items:center;gap:12px;min-width:0}
-.deliveries-page .dq-icon{flex:0 0 44px;width:44px;height:44px;border-radius:10px;background:#edf5f0;color:var(--accent);display:flex;align-items:center;justify-content:center}
-.deliveries-page .dq-icon .ui-icon{width:20px;height:20px;display:block}
-.deliveries-page .dq-field{display:flex;flex-direction:column;gap:8px;flex:1 1 auto;min-width:0;margin:0;padding:0}
-.deliveries-page .dq-label{display:block;margin:0;padding:0;font-size:13px;line-height:18px;font-weight:600;color:#33424f}
-.deliveries-page .dq-field select{display:block;width:100%;min-width:0;height:44px;margin:0;padding-top:0;padding-bottom:0;line-height:42px;font-size:13px;border-radius:8px;box-sizing:border-box}
-.deliveries-page .dq-actions{display:flex;gap:10px;align-self:end}
-.deliveries-page .dq-actions button{width:92px;height:44px;margin:0;padding-top:0;padding-bottom:0;border-radius:8px;justify-content:center}
-.deliveries-page .dq-actions .primary{background:#1f5a48;border-color:#1f5a48}
-@media(max-width:1100px){.deliveries-page .dq-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.deliveries-page .dq-actions{grid-column:1/-1;justify-content:flex-end}}
-@media(max-width:700px){.deliveries-page .dq-filters{padding:16px}.deliveries-page .dq-grid{grid-template-columns:minmax(0,1fr);gap:14px}}
+:is(.deliveries-page,.dq-scope) .dq-filters{border-color:#e7ebee;border-radius:12px;padding:20px;margin-bottom:22px}
+:is(.deliveries-page,.dq-scope) .dq-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;gap:20px;align-items:center}
+:is(.deliveries-page,.dq-scope) .dq-group{display:flex;align-items:center;gap:12px;min-width:0}
+:is(.deliveries-page,.dq-scope) .dq-icon{flex:0 0 44px;width:44px;height:44px;border-radius:10px;background:#edf5f0;color:var(--accent);display:flex;align-items:center;justify-content:center}
+:is(.deliveries-page,.dq-scope) .dq-icon .ui-icon{width:20px;height:20px;display:block}
+:is(.deliveries-page,.dq-scope) .dq-field{display:flex;flex-direction:column;gap:8px;flex:1 1 auto;min-width:0;margin:0;padding:0}
+:is(.deliveries-page,.dq-scope) .dq-label{display:block;margin:0;padding:0;font-size:13px;line-height:18px;font-weight:600;color:#33424f}
+:is(.deliveries-page,.dq-scope) .dq-field input,:is(.deliveries-page,.dq-scope) .dq-field select{display:block;width:100%;min-width:0;height:44px;margin:0;padding-top:0;padding-bottom:0;line-height:42px;font-size:13px;border-radius:8px;box-sizing:border-box}
+:is(.deliveries-page,.dq-scope) .dq-actions{display:flex;gap:10px;align-self:end}
+:is(.deliveries-page,.dq-scope) .dq-actions button{width:92px;height:44px;margin:0;padding-top:0;padding-bottom:0;border-radius:8px;justify-content:center}
+:is(.deliveries-page,.dq-scope) .dq-actions .primary{background:#1f5a48;border-color:#1f5a48}
+@media(max-width:1100px){:is(.deliveries-page,.dq-scope) .dq-grid{grid-template-columns:repeat(2,minmax(0,1fr))}:is(.deliveries-page,.dq-scope) .dq-actions{grid-column:1/-1;justify-content:flex-end}}
+@media(max-width:700px){:is(.deliveries-page,.dq-scope) .dq-filters{padding:16px}:is(.deliveries-page,.dq-scope) .dq-grid{grid-template-columns:minmax(0,1fr);gap:14px}}
+
+/* ===== Shared visual polish for remaining pages (scoped per route, #content only so dialogs are unaffected) ===== */
+.dq-scope.dq-cols-2 .dq-grid{grid-template-columns:repeat(2,minmax(0,1fr)) auto}
+.dq-scope.dq-cols-1 .dq-grid{grid-template-columns:minmax(0,420px)}
+.dq-scope .dq-field input{line-height:20px;padding-top:0;padding-bottom:0}
+@media(max-width:1100px){.dq-scope.dq-cols-2 .dq-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:700px){.dq-scope.dq-cols-2 .dq-grid,.dq-scope.dq-cols-1 .dq-grid{grid-template-columns:minmax(0,1fr)}}
+:is([data-route=gmail],[data-route=overview],[data-route=sites],[data-route=products],[data-route=deliveries],[data-route=notifications],[data-route=logs]) #content{--pg-line:#e7ebee}
+:is([data-route=overview],[data-route=sites],[data-route=products],[data-route=deliveries],[data-route=notifications],[data-route=logs]) #content .panel{border-color:var(--pg-line);border-radius:12px;box-shadow:0 1px 2px rgba(20,40,30,.03)}
+:is([data-route=overview],[data-route=sites],[data-route=products],[data-route=deliveries],[data-route=notifications],[data-route=logs]) #content th{background:#f7f9fa;color:#3d4b57;font-size:12px;white-space:nowrap}
+:is([data-route=overview],[data-route=sites],[data-route=products],[data-route=deliveries],[data-route=notifications],[data-route=logs]) #content tbody tr:hover{background:#fafcfb}
+:is([data-route=overview],[data-route=sites],[data-route=products],[data-route=deliveries],[data-route=logs]) #content td .badge{border-radius:999px;padding:3px 10px}
+[data-route=overview] #content .kpi{border-color:var(--pg-line);border-radius:12px;box-shadow:0 1px 2px rgba(20,40,30,.03)}
+[data-route=gmail] #content .card{border-color:var(--pg-line);border-radius:12px}
+:is([data-route=overview],[data-route=sites],[data-route=products],[data-route=deliveries],[data-route=logs]) #content .pagination{gap:10px;align-items:center}
+:is([data-route=overview],[data-route=sites],[data-route=products],[data-route=deliveries],[data-route=logs]) #content .pagination button{border-radius:8px}
