@@ -85,10 +85,10 @@ nav a.active::before{content:"";position:absolute;left:-18px;top:8px;bottom:8px;
 .events-page .event-filter-main>.actions button{height:42px;min-width:92px;border-radius:8px;gap:6px}
 .events-page .ev-submit{background:#1f5a48;border-color:#1f5a48}
 .events-page .event-advanced{margin-top:14px;background:#f6f9f7;border-radius:8px;padding:10px 12px}
-.events-page .event-advanced summary{display:inline-flex;align-items:center;gap:6px;font-weight:600;color:var(--accent);list-style:none}
+.events-page .event-advanced summary{display:inline-flex;align-items:center;gap:8px;font-weight:600;color:var(--accent);list-style:none}
 .events-page .event-advanced summary::-webkit-details-marker{display:none}
-.events-page .event-advanced summary::after{content:"⌄";font-size:13px;margin-left:2px;transition:transform .15s}
-.events-page .event-advanced[open] summary::after{transform:rotate(180deg)}
+.events-page .event-advanced summary .ev-chevron{display:flex;align-items:center;margin-left:2px;transition:transform .15s ease}
+.events-page .event-advanced[open] summary .ev-chevron{transform:rotate(180deg)}
 .events-page .event-advanced summary .ui-icon{width:16px;height:16px}
 .events-page .event-filter-more{border-top-color:#e2e9e5;margin-top:12px;padding-top:12px}
 .events-page .panel{border-radius:12px;border-color:var(--ev-line);overflow:visible}
@@ -167,3 +167,9 @@ nav a.active::before{content:"";position:absolute;left:-18px;top:8px;bottom:8px;
 [data-route=gmail] #content .card{border-color:var(--pg-line);border-radius:12px}
 :is([data-route=overview],[data-route=sites],[data-route=products],[data-route=deliveries],[data-route=logs]) #content .pagination{gap:10px;align-items:center}
 :is([data-route=overview],[data-route=sites],[data-route=products],[data-route=deliveries],[data-route=logs]) #content .pagination button{border-radius:8px}
+
+/* 商品列表 / 执行日志 filter cards: labels are screen-reader only; icon, control and button share one centered row */
+.dq-scope .dq-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.dq-scope .dq-field{gap:0}
+.dq-scope .dq-grid{align-items:center}
+.dq-scope .dq-actions{align-self:center}
