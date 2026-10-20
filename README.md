@@ -28,7 +28,7 @@ docker compose exec monitor python scripts/import_sites.py --overwrite # 用种�
 docker compose restart monitor                                       # 让调度器加载新站点
 ```
 
-**Chrome 扩展（`lecomte`、`niponino_arcteryx` 使用“日常 Chrome 扩展”模式）**：
+**Chrome 扩展（`lecomte` 使用“日常 Chrome 扩展”模式）**：
 
 1. 启动后台后生成扩展令牌配置：`python scripts/prepare_extension.py`（读取 `data/extension-worker.token`，写入被忽略的 `chrome-extension/config.local.json`）。
 2. Chrome 打开 `chrome://extensions` → 开启“开发者模式” → “加载已解压的扩展程序” → 选择 `chrome-extension/` 目录。
@@ -36,7 +36,7 @@ docker compose restart monitor                                       # 让调度
 
 **通知 / Gmail / Agent Mail**：Gmail 可直接在“Gmail 发件箱”页面配置，通知详情见独立“通知投递队列”。在后台站点设置中选择通知方式并填写收件人后开启“通知”。Agent Mail CLI 的安装与登录见 [Agent Mail 说明](docs/AGENTMAIL.md)（宿主机运行 `scripts/Start-AgentMail.ps1`）；SMTP、企业微信、pushplus 等令牌只放在 `.env`。
 
-**说明**：首次成功采集只建立基线，不会发送“新品”通知；`niponino.fr` 可能对自动化访问返回 403/Cloudflare 验证，扩展模式（你自己的 Chrome）通常可通过。
+**说明**：首次成功采集只建立基线，不会发送“新品”通知；`niponino.fr` 对普通自动化访问返回 403/Cloudflare 验证，现使用 **FlareSolverr 模式**（`execution_mode: "flaresolverr"`，compose 自带 `flaresolverr` 服务，仅内部网络），见 [FlareSolverr 说明](docs/FLARESOLVERR.md)；扩展模式仍可用于其他站点。
 
 ## 初次交付记录（历史，当前状态以本机后台为准）
 

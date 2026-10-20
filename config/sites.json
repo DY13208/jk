@@ -121,10 +121,10 @@
       "name": "Niponino - Arc'teryx",
       "url": "https://www.niponino.fr/arcteryx",
       "adapter": "css_catalog",
-      "interval_minutes": 60,
+      "interval_minutes": 240,
       "enabled": true,
       "permission_confirmed": true,
-      "policy_note": "Added on the owner's request (2026-10-16). css_catalog with next_link pagination. Uses css_http (plain HTTP, robots.txt respected) because the automated browser gets a Cloudflare JS challenge. 2026-10-16: left DISABLED - site returns HTTP 403 (Cloudflare) to every automated client from this PC's IP (Chrome, curl, urllib, even robots.txt).",
+      "policy_note": "Added on the owner's request (2026-10-16). css_catalog schema with next_link pagination. Plain HTTP and automated Chrome get a Cloudflare challenge/403; since 2026-10-20 pages are fetched through the bundled FlareSolverr container (execution_mode=flaresolverr, one session per run). Product IDs/fields are identical to the earlier extension captures.",
       "adapter_config": {
         "schema": {
           "name": "products",
@@ -169,8 +169,8 @@
         },
         "decimal_separator": ",",
         "max_pages": 40,
-        "page_delay": 5,
-        "execution_mode": "extension",
+        "page_delay": 8,
+        "execution_mode": "flaresolverr",
         "pagination_mode": "auto"
       },
       "event_rules": [

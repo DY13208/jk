@@ -13,6 +13,19 @@ services:
       options:
         max-size: "5m"
         max-file: "2"
+  flaresolverr:
+    # Cloudflare challenge solver for sites with adapter_config.execution_mode = "flaresolverr" (niponino).
+    # Internal compose network only: no published port; the monitor uses http://flaresolverr:8191/v1.
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+      TZ: Asia/Shanghai
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
   monitor:
     build: .
     init: false # tini supervises uvicorn and Xvfb in the image
@@ -42,6 +55,9 @@ services:
       NTFY_SERVER: ${NTFY_SERVER:-}
       NTFY_TOKEN: ${NTFY_TOKEN:-}
       NTFY_ALLOW_HTTP: ${NTFY_ALLOW_HTTP:-}
+      FLARESOLVERR_URL: ${FLARESOLVERR_URL:-http://flaresolverr:8191/v1}
+    depends_on:
+      - flaresolverr
     shm_size: 1gb
     restart: unless-stopped
     stop_grace_period: 40s

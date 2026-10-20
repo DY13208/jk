@@ -72,7 +72,10 @@ class MonitorService:
         acquired = False
         try:
             async with self.browser_slot:
-                acquired = self.db.acquire(site_id,owner,360)
+                mode = site['adapter_config'].get('execution_mode')
+                # FlareSolverr solves pages one by one (page_delay between them): allow a longer run.
+                limit = 1500 if mode=='flaresolverr' else 300
+                acquired = self.db.acquire(site_id,owner,limit+60)
                 if not acquired: return {'status':'BUSY'}
                 # Recheck after waiting for the shared browser slot.
                 site = self.db.site(site_id)
@@ -81,8 +84,11 @@ class MonitorService:
                 if site['adapter_config'].get('execution_mode') in ('host','extension'):
                     from .host_collector import collect
                     operation=collect(self.db,site)
+                elif site['adapter_config'].get('execution_mode')=='flaresolverr':
+                    from adapters import flaresolverr_fetch
+                    operation=self.adapters.get('flaresolverr_fetch',flaresolverr_fetch)(site)
                 else: operation=self.adapters[site['adapter']](site)
-                document = await asyncio.wait_for(operation,timeout=300)
+                document = await asyncio.wait_for(operation,timeout=limit)
                 # Administrative pause while collection is in flight also prevents commit.
                 if not self.db.site(site_id)['enabled']:
                     self.db.log_finish(log,'CANCELLED','采集期间网站被暂停，未提交快照')

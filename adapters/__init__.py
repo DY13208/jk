@@ -235,5 +235,71 @@ def collect_css_http(url, config, fetch=None):
         'extracted': len(products), 'pages': logs, 'complete': True}, 'products': products}
 
 
+async def flaresolverr_fetch(site, factory=None):
+    """execution_mode=flaresolverr: same CSS schema/pagination/clean() as css_http and the extension, but every page
+    is fetched through a FlareSolverr container (one browser session per run, destroyed in finally)."""
+    import asyncio
+    return await asyncio.to_thread(collect_flaresolverr, site['url'], site['adapter_config'])
+
+
+def flaresolverr_challenge(html):
+    import re
+    from crawl4ai_run.run_crawl4ai import access_control_page
+    low = (html or '').lower()
+    title = re.search(r'<title[^>]*>(.*?)</title>', low, re.S)
+    return (access_control_page(html) or 'challenges.cloudflare.com/turnstile' in low
+            or bool(title and re.match(r'\s*(just a moment|un instant|attention required|checking your browser|verify you are human)', title.group(1))))
+
+
+def collect_flaresolverr(url, config, post=None, sleep=None):
+    import json, os, time, uuid, urllib.request
+    from crawl4ai_run.run_crawl4ai import CollectionError
+    endpoint = config.get('flaresolverr_url') or os.environ.get('FLARESOLVERR_URL') or 'http://flaresolverr:8191/v1'
+    max_timeout = int(config.get('flaresolverr_timeout', 120000))
+    backoff = list(config.get('flaresolverr_backoff', [15, 45]))[:2]  # 1-2 retries per page
+    sleep = sleep or time.sleep
+    def default_post(payload):
+        request = urllib.request.Request(endpoint, data=json.dumps(payload).encode('utf-8'),
+                                         headers={'Content-Type': 'application/json; charset=utf-8'})
+        try:
+            with urllib.request.urlopen(request, timeout=max_timeout / 1000 + 30) as response:
+                return json.loads(response.read().decode('utf-8'))
+        except urllib.error.HTTPError as exc:  # FlareSolverr answers errors with HTTP 500 + JSON body
+            try: return json.loads(exc.read().decode('utf-8'))
+            except Exception: return {'status': 'error', 'message': f'HTTP {exc.code}'}
+    post = post or default_post
+    def call(payload):
+        try: return post(payload)
+        except OSError as exc: raise CollectionError(f'FlareSolverr 服务不可用（{type(exc).__name__}）；未提交快照') from exc
+    session = 'monitor-' + uuid.uuid4().hex[:12]
+    created = call({'cmd': 'sessions.create', 'session': session})
+    if created.get('status') != 'ok': raise CollectionError(f"FlareSolverr 会话创建失败：{str(created.get('message'))[:120]}；未提交快照")
+    timing = []
+    def fetch(target):
+        problem = ''
+        for attempt in range(len(backoff) + 1):
+            clock = time.monotonic()
+            answer = call({'cmd': 'request.get', 'url': target, 'session': session, 'maxTimeout': max_timeout})
+            solution = answer.get('solution') or {}
+            html = solution.get('response') or ''
+            if answer.get('status') == 'ok' and solution.get('status') == 200 and html and not flaresolverr_challenge(html):
+                timing.append(round(time.monotonic() - clock, 1))
+                return 200, solution.get('url') or target, html
+            if answer.get('status') == 'ok' and solution.get('status') == 429:
+                return 429, solution.get('url') or target, ''
+            problem = (str(answer.get('message') or '')[:120] if answer.get('status') != 'ok'
+                       else f"HTTP {solution.get('status')}" + ('，仍是 Cloudflare 验证页面' if flaresolverr_challenge(html) else ''))
+            if attempt < len(backoff): sleep(backoff[attempt])
+        # Not a site pause: the solver failed this time; the next scheduled run tries again.
+        raise CollectionError(f'FlareSolverr 未能通过验证（{problem}）；未提交快照')
+    try:
+        document = collect_css_http(url, config, fetch=fetch)
+    finally:
+        try: call({'cmd': 'sessions.destroy', 'session': session})
+        except Exception: pass
+    document['meta'].update(tool='flaresolverr', page_seconds=timing)
+    return document
+
+
 REGISTRY = {'css_http': css_http, 'odoo_lecomte': odoo_lecomte, 'css_catalog': css_catalog, 'shopify_json': shopify_json,
             'bergzeit_state': bergzeit_state}

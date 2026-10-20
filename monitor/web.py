@@ -66,8 +66,8 @@ class SiteInput(BaseModel):
             raise ValueError('page_delay 必须在 1 到 30 秒之间')
         if self.adapter_config.get('pagination_mode','auto') not in ('auto','links','load_more','next_link'):
             raise ValueError('pagination_mode 必须为 links 或 load_more')
-        if self.adapter_config.get('execution_mode','docker') not in ('docker','host','extension'):
-            raise ValueError('execution_mode 必须为 docker、host 或 extension')
+        if self.adapter_config.get('execution_mode','docker') not in ('docker','host','extension','flaresolverr'):
+            raise ValueError('execution_mode 必须为 docker、host、extension 或 flaresolverr')
         return self
 
 
