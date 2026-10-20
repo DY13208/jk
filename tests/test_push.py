@@ -92,3 +92,26 @@ def test_ui_has_channels_and_preserves_unknown_values():
     assert 'value="bark"' in html and 'value="ntfy"' in html
     assert "['notification_channel',s.notification_channel]" in js and 'sel.add(new Option(v,v))' in js
     assert 'data-pushtest' in js and '随机' in js
+
+
+def test_chinese_payload_sent_as_utf8_json(monkeypatch):
+    monkeypatch.setenv('BARK_KEY', KEY)
+    url, headers, extra = push.config(SITE)
+    note = push.build(SITE, [ev('NEW')]); note['title'] = '商品监控测试推送'; note['body'] = '价格下降：始祖鸟 Atom 夹克'
+    data = push.payload('bark', note, extra)
+    body, h = push.encode(data, headers)
+    assert h['Content-Type'] == 'application/json; charset=utf-8'
+    assert '商品监控测试推送'.encode('utf-8') in body and b'\\u' not in body
+    import json as _json
+    assert _json.loads(body.decode('utf-8'))['body'] == '价格下降：始祖鸟 Atom 夹克'
+    seen = {}
+    def handler(request):
+        seen['ct'] = request.headers['content-type']; seen['body'] = request.content
+        return httpx.Response(200, json={'code': 200})
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    r = asyncio.run(Notifier.send(url, data))
+    assert r.status_code == 200 and seen['ct'] == 'application/json; charset=utf-8'
+    assert _json.loads(seen['body'].decode('utf-8'))['title'] == '商品监控测试推送'
+    ntfy = push.encode(push.payload('ntfy', note, {'topic': TOPIC}))[0]
+    assert _json.loads(ntfy.decode('utf-8'))['title'] == '商品监控测试推送'

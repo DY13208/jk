@@ -37,7 +37,8 @@ class Notifier:
     @staticmethod
     async def send(url, payload, headers=None):
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
-            return await client.post(url, json=payload, headers=headers)
+            body, merged = push.encode(payload, headers)
+            return await client.post(url, content=body, headers=merged)
 
     async def dispatch(self):
         if self.lock.locked(): return

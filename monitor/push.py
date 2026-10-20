@@ -3,6 +3,7 @@
 Secrets (Bark device key, ntfy topic/token) live only in deployment environment variables; the site row stores
 just the variable name (webhook_env), like pushplus. Several pending events of one site are batched into one push.
 """
+import json
 import os
 import re
 from urllib.parse import urlsplit, quote
@@ -104,3 +105,9 @@ def outcome(channel, response):
     if channel == 'bark' and body.get('code') != 200: return 'held', 'Bark 拒绝推送，请核对设备 Key'
     if channel == 'ntfy' and not body.get('id'): return 'uncertain', 'ntfy 返回内容无法确认，请在手机上核对'
     return 'sent', f'{name} 服务器已接收，送达请在手机上核对'
+
+
+def encode(payload, headers=None):
+    """Serialize a JSON payload as explicit UTF-8 bytes with a charset header (Chinese titles/bodies stay intact)."""
+    body = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    return body, {'Content-Type': 'application/json; charset=utf-8', **(headers or {})}
