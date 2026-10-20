@@ -70,6 +70,25 @@ SELECT='''SELECT o.*, e.at AS event_at,e.run_id,e.kind,e.payload AS event_payloa
     s.notification_channel AS current_channel,s.email_to AS current_to,s.webhook_env AS current_variable'''
 
 
+def diagnostics(db):
+    groups = {}
+    with db.connect() as conn:
+        rows = conn.execute("SELECT status,last_error FROM monitor_outbox WHERE status IN ('held','uncertain')")
+        for row in rows:
+            reason = row['last_error'] or ''
+            if row['status'] == 'uncertain':
+                category, advice = '送达结果不确定', '先核对原渠道的收件箱或发送记录；当前配置可能已更换渠道，确认未收到后再重试。'
+            elif 'Agent Mail' in reason and ('限频' in reason or '额度' in reason):
+                category, advice = 'Agent Mail 限频或额度耗尽', '核对原发送账号额度；这是历史失败记录，当前邮件配置正常也不会自动补发。'
+            elif 'SMTP_HOST' in reason or 'SMTP_FROM' in reason:
+                category, advice = '历史 SMTP 配置缺失', '检查当前通知设置；如已配置邮件，核对收件目标后可逐条重试。'
+            else:
+                category, advice = '其他暂停通知', '打开投递详情查看错误及原发送渠道，核对配置后决定是否重试。'
+            if category not in groups: groups[category] = {'category':category,'count':0,'advice':advice}
+            groups[category]['count'] += 1
+    return {'groups':list(groups.values()), 'automatic_retry':False}
+
+
 def listing(db, *, site_id='',status='',channel='',limit=100,offset=0):
     clauses,args=[],[]
     for field,value in [('o.site_id',site_id),('o.status',status)]:

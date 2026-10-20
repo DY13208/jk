@@ -86,8 +86,14 @@ def request_test(db, site_id, to=None):
         return {'id': cur.lastrowid, 'recipients': addresses}
 
 
-def _job(kind, row_id, site, event, addresses, summary=None):
-    return {'job': f'{kind}:{row_id}', 'subject': subject(site, event), 'html': render_html(site, event, summary),
+def attempt_id(claimed):
+    return f'{float(claimed or 0):.6f}'
+
+
+def _job(kind, row_id, site, event, addresses, summary=None, attempt=None):
+    # Outbox jobs carry an attempt id (the claim timestamp, unique per claim even after a manual retry resets
+    # `attempts`): a late receipt from an earlier attempt of the same row is stale and must not finish it.
+    return {'job': f'{kind}:{row_id}' + (f':{attempt}' if attempt is not None else ''), 'subject': subject(site, event), 'html': render_html(site, event, summary),
             'text': message(site, event), 'to': addresses}
 
 
@@ -118,10 +124,11 @@ def claim(db):
                 conn.execute("UPDATE monitor_outbox SET status='held',last_error='Agent Mail 收件邮箱配置无效' WHERE id=?", (row['id'],)); continue
             event = dict(conn.execute('SELECT * FROM monitor_events WHERE id=?', (row['event_id'],)).fetchone())
             if event['kind'] == 'ACCESS_DENIED':
-                conn.execute("UPDATE monitor_outbox SET status='held',last_error='访问异常仅在后台记录，不推送' WHERE id=?", (row['id'],)); continue
+                conn.execute("UPDATE monitor_outbox SET status='suppressed',last_error='访问异常仅在后台记录，不推送' WHERE id=?", (row['id'],)); continue
             event['payload'] = json.loads(event['payload'])
-            conn.execute("UPDATE monitor_outbox SET status='sending',claimed_at=?,attempts=attempts+1 WHERE id=?", (time.time(), row['id']))
-            job=_job('outbox', row['id'], site, event, addresses, run_summary(conn, event.get('run_id')))
+            claimed = time.time()
+            conn.execute("UPDATE monitor_outbox SET status='sending',claimed_at=?,attempts=attempts+1 WHERE id=?", (claimed, row['id']))
+            job=_job('outbox', row['id'], site, event, addresses, run_summary(conn, event.get('run_id')), attempt=attempt_id(claimed))
             from .notification_history import snapshot
             worker=conn.execute("SELECT value FROM monitor_meta WHERE key='agentmail_worker'").fetchone()
             worker=json.loads(worker[0]) if worker else {}
@@ -148,6 +155,7 @@ def outcome(result):
 
 def finish(db, job, result):
     kind, _, raw = str(job).partition(':')
+    raw, _, attempt = raw.partition(':')
     try: row_id = int(raw)
     except ValueError: raise LookupError('任务不存在') from None
     state, reason, retry = outcome(result)
@@ -159,8 +167,12 @@ def finish(db, job, result):
             conn.execute('UPDATE monitor_mail_tests SET status=?,last_error=?,finished=? WHERE id=?', (state, reason, now_iso(), row_id))
             return {'status': state}
         if kind != 'outbox': raise LookupError('任务不存在')
-        row = conn.execute("SELECT status,attempts FROM monitor_outbox WHERE id=?", (row_id,)).fetchone()
+        row = conn.execute("SELECT status,attempts,claimed_at FROM monitor_outbox WHERE id=?", (row_id,)).fetchone()
         if not row or row[0] != 'sending': raise LookupError('任务不存在或已结束')
+        # Only the current attempt may finish the row. A legacy id without attempt (claimed before this upgrade)
+        # is accepted only for a first attempt, the one case where it cannot be confused with a newer claim.
+        current = attempt == attempt_id(row['claimed_at']) if attempt else row['attempts'] == 1
+        if not current: raise LookupError('过期的发送回执（不是当前这次尝试），已忽略')
         next_at = 0
         if retry:
             if row['attempts'] < MAX_ATTEMPTS: next_at = time.time() + min(3600, 60 * 2 ** row['attempts'])

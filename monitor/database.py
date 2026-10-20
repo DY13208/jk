@@ -128,6 +128,12 @@ class Database:
                 CREATE TABLE IF NOT EXISTS monitor_logs(
                     id INTEGER PRIMARY KEY,site_id TEXT,started TEXT NOT NULL,ended TEXT,status TEXT NOT NULL,
                     message TEXT NOT NULL DEFAULT '',run_id INTEGER REFERENCES runs(run_id));
+                CREATE INDEX IF NOT EXISTS monitor_logs_site_id ON monitor_logs(site_id,id);
+                CREATE INDEX IF NOT EXISTS monitor_logs_day ON monitor_logs(julianday(started));
+                CREATE INDEX IF NOT EXISTS monitor_events_day ON monitor_events(julianday(at));
+                CREATE TABLE IF NOT EXISTS monitor_storage_samples(
+                    hour INTEGER PRIMARY KEY,database_bytes INTEGER NOT NULL,wal_bytes INTEGER NOT NULL,
+                    backup_bytes INTEGER NOT NULL,free_bytes INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS monitor_leases(site_id TEXT PRIMARY KEY,owner TEXT,expires REAL);
                 CREATE TABLE IF NOT EXISTS monitor_host_jobs(
                     id TEXT PRIMARY KEY,site_id TEXT NOT NULL,created REAL NOT NULL,status TEXT NOT NULL,
@@ -142,6 +148,11 @@ class Database:
             outbox_columns = {r['name'] for r in db.execute('PRAGMA table_info(monitor_outbox)')}
             if 'delivery_snapshot' not in outbox_columns:
                 db.execute('ALTER TABLE monitor_outbox ADD COLUMN delivery_snapshot TEXT')
+            # Policy-excluded alerts are history, not deliveries awaiting repair.
+            db.execute("""UPDATE monitor_outbox SET status='suppressed',
+                last_error='访问异常按现行规则不推送；原记录：' || last_error
+                WHERE status IN ('held','pending') AND event_id IN
+                (SELECT id FROM monitor_events WHERE kind='ACCESS_DENIED')""")
             seed = os.getenv('SITES_SEED')
             # Fresh databases only, so sites the owner later deletes are not resurrected on restart.
             if seed and Path(seed).is_file() and not db.execute('SELECT 1 FROM monitor_sites LIMIT 1').fetchone():
@@ -326,6 +337,22 @@ class Database:
             if not rid: return []
             return [json.loads(r[0]) for r in db.execute('SELECT payload FROM monitor_details WHERE run_id=? ORDER BY product_id', (rid,))]
 
+    def product_page(self, site_id, q='', limit=100, offset=0):
+        with self.connect() as db:
+            # SQLite lower() is ASCII-only. Preserve the existing Unicode search semantics.
+            db.create_function('casefold', 1, lambda value: str(value or '').casefold(), deterministic=True)
+            db.execute('BEGIN')
+            rid = self.latest_id(db, site_id)
+            if rid is None: return {'items':[], 'total':0}
+            where, args = 'run_id=?', [rid]
+            if q:
+                where += " AND instr(casefold(json_extract(payload,'$.name') || ' ' || product_id),?)>0"
+                args.append(q.casefold())
+            total = db.execute(f'SELECT COUNT(*) FROM monitor_details WHERE {where}', args).fetchone()[0]
+            rows = db.execute(f'SELECT payload FROM monitor_details WHERE {where} ORDER BY product_id LIMIT ? OFFSET ?',
+                              [*args, limit, offset])
+            return {'items':[json.loads(row[0]) for row in rows], 'total':total}
+
     def history(self, table, site_id=None, limit=100, offset=0):
         if table not in ('monitor_events','monitor_logs','monitor_outbox'): raise ValueError('无效表')
         with self.connect() as db:
@@ -336,10 +363,18 @@ class Database:
                 if 'payload' in row: row['payload'] = json.loads(row['payload'])
             return {'items':rows,'total':total}
 
+    def product_counts(self):
+        with self.connect() as db:
+            counts = {s['id']:0 for s in self.sites()}
+            counts.update(dict(db.execute('''SELECT latest.site_id,COUNT(d.product_id)
+                FROM (SELECT site_id,MAX(run_id) AS run_id FROM monitor_run_meta WHERE complete=1 GROUP BY site_id) latest
+                LEFT JOIN monitor_details d ON d.run_id=latest.run_id GROUP BY latest.site_id''').fetchall()))
+            return counts
+
     def overview(self):
         sites = self.sites()
         with self.connect() as db:
-            counts = {s['id']:len(self.products(s['id'])) for s in sites}
+            counts = self.product_counts()
             runs = db.execute('SELECT COUNT(*) FROM monitor_run_meta WHERE complete=1').fetchone()[0]
             statuses = dict(db.execute('SELECT status,COUNT(*) FROM monitor_outbox GROUP BY status').fetchall())
             pending = statuses.get('pending',0) + statuses.get('sending',0)

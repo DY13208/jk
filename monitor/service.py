@@ -1,5 +1,6 @@
 import asyncio
 import re
+import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -8,9 +9,9 @@ from crawl4ai_run.run_crawl4ai import CollectionError
 from .notifications import Notifier
 
 
-def describe(exc):
+def describe(exc, limit=300):
     """Show the real cause (type + short message) instead of a generic failure text."""
-    if isinstance(exc,(asyncio.TimeoutError,TimeoutError)) and not str(exc): return '采集超时（超过 300 秒）；未提交快照'
+    if isinstance(exc,(asyncio.TimeoutError,TimeoutError)) and not str(exc): return f'采集超时（超过 {limit} 秒）；未提交快照'
     text = re.sub(r'https?://\S+','<url>',' '.join(str(exc).split()))[:200]
     return f'采集失败：{type(exc).__name__}' + (f'：{text}' if text else '') + '；未提交快照'
 
@@ -22,6 +23,8 @@ class MonitorService:
         self.scheduler = AsyncIOScheduler(timezone='UTC')
         self.notifier = Notifier(db)
         self.browser_slot = asyncio.Semaphore(1)
+        self.slots = {'docker': self.browser_slot, **{mode: asyncio.Semaphore(1) for mode in ('host','extension','flaresolverr')}}
+        self.progress = {}
         self.active = set()
         self.tasks = set()
 
@@ -33,6 +36,8 @@ class MonitorService:
         self.scheduler.start()
         self.scheduler.add_job(self.notifier.dispatch,'interval',seconds=10,id='notifications',max_instances=1,coalesce=True)
         self.scheduler.add_job(self.backup,'cron',hour=2,minute=0,id='backup',max_instances=1,coalesce=True)
+        self.scheduler.add_job(self.sample_storage,'interval',hours=1,id='storage',max_instances=1,coalesce=True,
+                               next_run_time=datetime.now(timezone.utc))
         self.sync_jobs()
 
     def sync_jobs(self):
@@ -51,6 +56,13 @@ class MonitorService:
                     id='site:'+site['id'],max_instances=1,coalesce=True,misfire_grace_time=60,
                     next_run_time=datetime.now(timezone.utc)+timedelta(seconds=5))
 
+    async def sample_storage(self):
+        from .storage import sample_storage
+        try: await asyncio.to_thread(sample_storage, self.db)
+        except Exception as exc:
+            log = self.db.log_start(None)
+            self.db.log_finish(log,'FAILED','存储统计失败：'+type(exc).__name__)
+
     async def backup(self):
         try: await asyncio.to_thread(self.db.backup)
         except Exception as exc:
@@ -68,23 +80,36 @@ class MonitorService:
             return {'status':'DISABLED'}
         if site_id in self.active: return {'status':'BUSY'}
         self.active.add(site_id)
-        owner, log = uuid.uuid4().hex, None
-        acquired = False
+        owner = uuid.uuid4().hex
         try:
-            async with self.browser_slot:
-                mode = site['adapter_config'].get('execution_mode')
-                # FlareSolverr solves pages one by one (page_delay between them): allow a longer run.
-                limit = 1500 if mode=='flaresolverr' else 300
+            while True:
+                # The mode decides the slot, the lease/timeout and the collector. It is re-read while holding the slot;
+                # if it was switched while this job was queued, the job releases that slot and re-queues on the new
+                # mode's slot. So the held slot always matches the mode that runs: same-mode jobs never overlap.
+                mode = site['adapter_config'].get('execution_mode', 'docker')
+                limit = 1500 if mode == 'flaresolverr' else 300
+                queued_at = self.progress.get(site_id, {}).get('queued_at', time.time())
+                self.progress[site_id] = {'state':'queued','mode':mode,'queued_at':queued_at}
+                async with self.slots.get(mode, self.browser_slot):
+                    site = self.db.site(site_id)
+                    if not site or not site['enabled']: return {'status':'DISABLED'}
+                    if site['adapter_config'].get('execution_mode', 'docker') != mode: continue
+                    return await self._collect(site_id, site, mode, limit, owner)
+        finally:
+            self.active.discard(site_id)
+            self.progress.pop(site_id, None)
+
+    async def _collect(self, site_id, site, mode, limit, owner):
+        log, acquired = None, False
+        try:
+                self.progress[site_id].update(state='running', started_at=time.time())
                 acquired = self.db.acquire(site_id,owner,limit+60)
                 if not acquired: return {'status':'BUSY'}
-                # Recheck after waiting for the shared browser slot.
-                site = self.db.site(site_id)
-                if not site['enabled']: return {'status':'DISABLED'}
                 log = self.db.log_start(site_id)
-                if site['adapter_config'].get('execution_mode') in ('host','extension'):
+                if mode in ('host','extension'):
                     from .host_collector import collect
                     operation=collect(self.db,site)
-                elif site['adapter_config'].get('execution_mode')=='flaresolverr':
+                elif mode=='flaresolverr':
                     from adapters import flaresolverr_fetch
                     operation=self.adapters.get('flaresolverr_fetch',flaresolverr_fetch)(site)
                 else: operation=self.adapters[site['adapter']](site)
@@ -100,7 +125,7 @@ class MonitorService:
             if log: self.db.log_finish(log,'INTERRUPTED','任务取消；未提交快照')
             raise
         except Exception as exc:
-            reason = str(exc) if isinstance(exc,CollectionError) else describe(exc)
+            reason = str(exc) if isinstance(exc,CollectionError) else describe(exc, limit)
             if log:
                 self.db.log_finish(log,'FAILED',reason)
                 if isinstance(exc,CollectionError) and exc.status in (403,429):
@@ -110,7 +135,6 @@ class MonitorService:
             return {'status':'FAILED','message':reason}
         finally:
             if acquired: self.db.release(site_id,owner)
-            self.active.discard(site_id)
 
     async def stop(self):
         self.scheduler.shutdown(wait=False)

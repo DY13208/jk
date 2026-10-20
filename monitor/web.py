@@ -98,6 +98,8 @@ def create_app(db_path=None, scheduled=True):
     app.state.db = db
     from .notifications import Notifier
     app.state.push_sender = Notifier.send
+    from .email_delivery import send_email
+    app.state.email_sender = send_email
     from .gmail import router as gmail_router
     app.include_router(gmail_router(db))
     from fastapi.exceptions import RequestValidationError
@@ -155,13 +157,45 @@ def create_app(db_path=None, scheduled=True):
     @app.get('/health')
     def health(): return {'ok':True,'crawler':'Crawl4AI 0.9.4'}
 
+    @app.get('/api/health')
+    async def business_status():
+        from .business_health import business_health
+        wx = await weixin_for_health()
+        import asyncio
+        return await asyncio.to_thread(business_health, db, app.state.service, wx)
+
     @app.get('/')
     def index(): return FileResponse(ROOT/'admin'/'index.html')
 
     app.mount('/assets',StaticFiles(directory=ROOT/'admin'),name='assets')
 
+    async def weixin_for_health():
+        # Only ask the bridge when a site actually notifies through it (status() never raises).
+        if any(s['notify_enabled'] and s['enabled'] and s.get('notification_channel')=='weixin' for s in db.sites()):
+            return await weixin.status(db)
+        return None
+
     @app.get('/api/overview')
-    def overview(): return db.overview()
+    async def overview():
+        from .business_health import business_health
+        wx = await weixin_for_health()
+        import asyncio
+        return await asyncio.to_thread(lambda: {**db.overview(), 'business_health': business_health(db, app.state.service, wx)})
+
+    @app.get('/api/overview/trends')
+    def overview_trends(days: int=Query(90,ge=1,le=90), offset_minutes: int=Query(480,ge=-840,le=840)):
+        from .overview_trends import trends
+        return trends(db, days, offset_minutes)
+
+    @app.get('/api/notifications/diagnostics')
+    def notification_diagnostics():
+        from .notification_history import diagnostics
+        return diagnostics(db)
+
+    @app.get('/api/storage')
+    def storage_status():
+        from .storage import storage_status
+        return storage_status(db)
 
     @app.get('/api/collector/status')
     def collector_status(): return {**host_collector.status(db),'extension':host_collector.status(db,'extension')}
@@ -212,7 +246,8 @@ def create_app(db_path=None, scheduled=True):
     @app.get('/api/sites')
     def sites():
         items = db.sites()
-        for site in items: site['product_count'] = len(db.products(site['id']))
+        counts = db.product_counts()
+        for site in items: site['product_count'] = counts.get(site['id'], 0)
         return {'items':items,'adapters':list(REGISTRY)}
 
     @app.put('/api/sites/{site_id}')
@@ -234,9 +269,8 @@ def create_app(db_path=None, scheduled=True):
         return {'status':'QUEUED'}
 
     @app.get('/api/products')
-    def products(site_id: str='lecomte', q: str='',limit: int=Query(100,ge=1,le=500),offset: int=Query(0,ge=0)):
-        items = [p for p in db.products(site_id) if q.casefold() in (p['name']+' '+p['product_id']).casefold()]
-        return {'items':items[offset:offset+limit],'total':len(items)}
+    def products(site_id: str='lecomte', q: str=Query('',max_length=200),limit: int=Query(100,ge=1,le=500),offset: int=Query(0,ge=0)):
+        return db.product_page(site_id, q, limit, offset)
 
     @app.get('/api/events')
     def events(site_id: str|None=None, kind: str=Query('',pattern=r'^$|^(NEW|REMOVED|RETURNED|PRICE_DROP|PRICE_RISE|ACCESS_DENIED)$'),
@@ -261,7 +295,7 @@ def create_app(db_path=None, scheduled=True):
         return db.history('monitor_logs',site_id,limit,offset)
 
     @app.get('/api/notifications')
-    def notifications(site_id: str='', status: str=Query('',pattern=r'^$|^(pending|sending|sent|held|uncertain)$'),
+    def notifications(site_id: str='', status: str=Query('',pattern=r'^$|^(pending|sending|sent|held|uncertain|suppressed)$'),
                       channel: str=Query('',pattern=r'^$|^(weixin|wecom|pushplus|bark|ntfy|email|agentmail|unknown)$'),
                       limit: int=Query(100,ge=1,le=500),offset: int=Query(0,ge=0)):
         from .notification_history import listing
@@ -298,6 +332,68 @@ def create_app(db_path=None, scheduled=True):
             raise HTTPException(400,'请填写微信要求的数字配对码')
         try: return await weixin.request(db,action,{'code':body.get('code')} if action=='verify' else {})
         except Exception: raise HTTPException(503,'微信连接服务暂不可用，请检查服务状态') from None
+
+    @app.get('/api/notify/channels')
+    async def notify_channels():
+        # Presence and variable names only; secret values never leave the environment.
+        from . import channels
+        import asyncio
+        wx = await weixin.status(db)
+        agent = await asyncio.to_thread(agentmail.status, db)
+        items = await asyncio.to_thread(channels.overview, db, wx, agent)
+        return {'channels': items}
+
+    @app.post('/api/notify/channels/{channel}/test')
+    async def notify_channel_test(channel: str, payload: dict, request: Request):
+        """Explicit admin click only: one real test message through a channel, independent of any site."""
+        from . import channels, pushplus
+        from .notifications import webhook
+        import asyncio
+        if channel not in channels.NAMES: raise HTTPException(404,'未知通知方式')
+        if not payload.get('confirm'): raise HTTPException(400,'请确认后再发送测试')
+        env = str(payload.get('env') or channels.DEFAULT_ENV.get(channel,''))
+        to = str(payload.get('to') or '')
+        if channel in ('bark','ntfy','wecom','pushplus') and env not in channels.env_names(db, channel):
+            raise HTTPException(400,'请选择通知设置页列出的环境变量')
+        probe = {'id':'_channel_test','name':'通知设置','url':'','notification_channel':channel,'webhook_env':env,'email_to':to}
+        title, body = '【测试】商品监控通知', '这是一条从“通知设置”页手动发送的测试消息；收到即说明该通知方式配置正确。'
+        sender = request.app.state.push_sender
+        try:
+            if channel in push.CHANNELS:
+                url, headers, extra = push.config(probe)
+                note = push.build(probe,[{'id':0,'kind':'TEST','payload':{}}]); note.update(title=title, body=body)
+                response = await sender(url, push.payload(channel,note,extra,'通知设置'), headers)
+                state, reason = push.outcome(channel, response)
+            elif channel == 'wecom':
+                response = await sender(webhook(probe), {'msgtype':'text','text':{'content':title+'\n'+body}})
+                ok = response.status_code == 200 and response.json().get('errcode') == 0
+                state, reason = ('sent','企业微信已接受') if ok else ('held',f'企业微信未接受（HTTP {response.status_code}）')
+            elif channel == 'pushplus':
+                response = await sender(pushplus.ENDPOINT, {'token':pushplus.token(probe),'title':title,'content':body,'template':'txt','channel':'wechat'})
+                ok = response.status_code == 200 and response.json().get('code') == 200
+                state, reason = ('sent','pushplus 已接受请求') if ok else ('held','pushplus 拒绝请求，请核对 Token、实名状态及额度')
+            elif channel == 'email':
+                from .email_delivery import configuration
+                from email.message import EmailMessage
+                config = configuration(probe, db)
+                mail = EmailMessage(); mail['Subject'], mail['From'], mail['To'] = title, config['sender'], ', '.join(config['recipients'])
+                mail.set_content(body)
+                refused = await asyncio.to_thread(request.app.state.email_sender, config, mail)
+                state, reason = ('uncertain','部分收件人被拒绝') if refused else ('sent','SMTP 服务器已接受邮件；请在邮箱中核对')
+            elif channel == 'agentmail':
+                first = next(iter(db.sites()), None)
+                if not first: raise ValueError('请先添加至少一个网站')
+                queued = agentmail.request_test(db, first['id'], to)
+                state, reason = 'queued', f"测试邮件已排队（{', '.join(queued['recipients'])}），本机工作进程处理后见 Agent Mail 测试记录"
+            else:
+                wx = await weixin.status(db)
+                if not wx.get('ready'): raise ValueError('微信扫码直连未就绪')
+                result = await weixin.request(db,'send',{'text':title+'\n'+body})
+                state, reason = ('sent','腾讯微信接口已接受') if result.get('ok') is True else ('uncertain','微信发送结果不确定')
+        except ValueError as exc: raise HTTPException(409,str(exc)) from exc
+        except httpx.HTTPError: raise HTTPException(502,'无法连接通知服务') from None
+        except Exception: raise HTTPException(502,'发送结果不确定，请在接收端核对') from None
+        return {'status':state,'message':reason}
 
     @app.post('/api/sites/{site_id}/push-test')
     async def push_test(site_id: str, payload: dict, request: Request):
@@ -378,8 +474,9 @@ def create_app(db_path=None, scheduled=True):
     @app.post('/api/notifications/{row_id}/retry')
     def retry(row_id: int):
         with db.connect() as conn:
-            row = conn.execute('SELECT status FROM monitor_outbox WHERE id=?',(row_id,)).fetchone()
+            row = conn.execute('SELECT o.status,e.kind FROM monitor_outbox o JOIN monitor_events e ON e.id=o.event_id WHERE o.id=?',(row_id,)).fetchone()
             if not row: raise HTTPException(404,'通知不存在')
+            if row['kind']=='ACCESS_DENIED': raise HTTPException(409,'访问异常按规则不投递，无需重试')
             if row[0] not in ('held','uncertain'): raise HTTPException(409,'仅允许人工重试待核对或暂停的通知')
             conn.execute("UPDATE monitor_outbox SET status='pending',attempts=0,next_at=0,last_error='' WHERE id=?",(row_id,))
         return {'ok':True}

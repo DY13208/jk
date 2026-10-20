@@ -34,7 +34,7 @@ docker compose restart monitor                                       # 让调度
 2. Chrome 打开 `chrome://extensions` → 开启“开发者模式” → “加载已解压的扩展程序” → 选择 `chrome-extension/` 目录。
 3. 点击扩展图标 → **授权已配置网站**，允许访问扩展模式站点的域名。之后扩展每 30 秒向后台领取任务；浏览器关闭或电脑睡眠时不会运行。
 
-**通知 / Gmail / Agent Mail**：Gmail 可直接在“Gmail 发件箱”页面配置，通知详情见独立“通知投递队列”。在后台站点设置中选择通知方式并填写收件人后开启“通知”。Agent Mail CLI 的安装与登录见 [Agent Mail 说明](docs/AGENTMAIL.md)（宿主机运行 `scripts/Start-AgentMail.ps1`）；SMTP、企业微信、pushplus 等令牌只放在 `.env`。
+**通知 / Gmail / Agent Mail**：Gmail 可直接在“通知设置 → Gmail 发件箱”中配置，通知详情见独立“通知投递队列”。在后台站点设置中选择通知方式并填写收件人后开启“通知”。Agent Mail CLI 的安装与登录见 [Agent Mail 说明](docs/AGENTMAIL.md)（宿主机运行 `scripts/Start-AgentMail.ps1`）；SMTP、企业微信、pushplus 等令牌只放在 `.env`。
 
 **说明**：首次成功采集只建立基线，不会发送“新品”通知；`niponino.fr` 对普通自动化访问返回 403/Cloudflare 验证，现使用 **FlareSolverr 模式**（`execution_mode: "flaresolverr"`，compose 自带 `flaresolverr` 服务，仅内部网络），见 [FlareSolverr 说明](docs/FLARESOLVERR.md)；扩展模式仍可用于其他站点。
 
@@ -55,9 +55,11 @@ cd D:\jk
 docker compose up -d --build monitor
 ```
 
-后台：**http://127.0.0.1:8080/**。健康检查：`/health`；API 文档：`/docs`。
+后台：**http://127.0.0.1:8080/**。进程健康检查：`/health`；业务状态：`/api/health`（沿用管理员认证）；API 文档：`/docs`。
 
-容器自带系统 Google Chrome、Xvfb、xauth 和 tini，`xvfb-run` 为有界面 Chrome 提供显示环境，`shm_size: 1gb` 避免共享内存不足。只运行一个 Uvicorn worker、一个服务副本；多个网站在同一服务内独立调度，浏览器采集串行执行。每站默认 15 分钟；启用或重启后的首轮在约 5 秒后运行，此后按各站间隔采集。错过的任务合并，不补跑大量历史轮次。
+监控总览显示采集端离线、尚无成功记录、数据过期、最近采集失败和通知待核对状态，并展示最近成功时间及当前任务排队时长。超过两倍采集间隔且至少 30 分钟未成功更新时，数据标记为过期；主动暂停的网站不因数据陈旧报警。业务异常不会令 Docker 存活检查失败。
+
+容器自带系统 Google Chrome、Xvfb、xauth 和 tini，`xvfb-run` 为有界面 Chrome 提供显示环境，`shm_size: 1gb` 避免共享内存不足。只运行一个 Uvicorn worker、一个服务副本；多个网站在同一服务内独立调度，采集按 Docker Chrome、本机 Chrome、Chrome 扩展、FlareSolverr 分组；同组串行，不同组可并行，慢站点不会占住其他模式的采集槽位。每站默认 15 分钟；启用或重启后的首轮在约 5 秒后运行，此后按各站间隔采集。错过的任务合并，不补跑大量历史轮次。
 
 查看和停止：
 
@@ -73,7 +75,7 @@ Linux 上首次部署到绑定目录时，确保 UID 1000 可写入 `data/`，�
 
 ## 中文后台使用
 
-左侧包含 Gmail 发件箱、监控总览、网站管理、商品列表、变化历史、通知投递队列、通知设置、执行日志。右上角可以立即创建 SQLite 一致性备份。
+左侧包含监控总览、网站管理、商品列表、变化历史、通知投递队列、通知设置、执行日志。右上角可以立即创建 SQLite 一致性备份。
 
 ### 网站 1：Lecomte
 
@@ -132,6 +134,8 @@ Linux 上首次部署到绑定目录时，确保 UID 1000 可写入 `data/`，�
 - 手动备份可在后台点击，或调用 `POST /api/backups`。
 - 恢复时先停止服务，将所需备份复制为 `data/snapshots.db`，在服务停止后清理该数据库残留的 `-wal` / `-shm` 文件，再启动。先保留当前库的备份，不在运行时覆盖数据库。
 - 快照和历史持续保留，没有自动清空；长期运行需监控磁盘空间，并将备份复制到另一存储设备。Docker 日志每文件 10 MB，保留 3 份。
+- 总览的“存储与备份”及 `GET /api/storage` 展示数据库/WAL、备份数量与大小、最近备份时间和文件系统可用空间；低于 2 GiB 或 10% 可用空间、数据库超过 1 GiB、备份超过两天未更新时提示。容器显示其可见文件系统容量，不代表 Windows 所有磁盘。不会自动删除历史或手动备份。
+- 商品搜索与分页在数据库中执行，保留 Unicode 大小写匹配和字面量搜索；网站及总览商品计数不再解析全部商品 JSON。
 
 后台默认只绑定 `127.0.0.1`。设置 `ADMIN_PASSWORD` 后使用浏览器 Basic 登录（默认用户名 `admin`）。若后续提供远程访问，应置于有 TLS 和访问控制的反向代理之后，不直接暴露无密码后台。API 拒绝跨站修改请求。
 
@@ -178,7 +182,7 @@ Bark（iPhone）与 ntfy（Android/iPhone）手机推送：无需每日激活，
 
 ### Gmail 发件箱
 
-管理台左侧「Gmail 发件箱」可保存个人 Gmail 地址与应用专用密码、测试 SMTP 登录、发送带附件的邮件及查看最近 50 条手动发送记录。需先开启 Google 两步验证并创建应用专用密码，不使用 Google 登录密码。连接测试不会发送邮件，发送按钮会展示确认窗口。
+管理台「通知设置 → Gmail 发件箱」可保存个人 Gmail 地址与应用专用密码、测试 SMTP 登录、发送带附件的邮件及查看最近 50 条手动发送记录。需先开启 Google 两步验证并创建应用专用密码，不使用 Google 登录密码。连接测试不会发送邮件，发送按钮会展示确认窗口。
 
 应用密码加密存于 `data/gmail.enc`，本机密钥为 `data/gmail.key`，均不进入 Git，也不进入 SQLite 备份；拥有这两个文件的人仍可解密，需保护宿主机目录权限。迁移时需同时保留这两个文件。不要将凭据贴到聊天中。
 
@@ -191,3 +195,17 @@ Bark（iPhone）与 ntfy（Android/iPhone）手机推送：无需每日激活，
 ### 通知投递队列
 
 左侧“通知投递队列”独立展示网站通知的状态、方式、接收目标、尝试次数和结果，支持按网站、方式和状态筛选。“预览 / 详情”只读，不发送消息。后续投递在发送前保存最近一次尝试的渠道、接收目标和正文快照（邮件含 HTML）；历史缺失记录明确标注，预览按事件数据重建，当前网站设置不作为历史投递证据。邮件 HTML 在隔离预览中显示，禁用脚本和外部图片。接口接受不代表最终送达。群机器人或 pushplus 未提供名称时显示配置标识；微信显示绑定用户 ID。
+
+
+## 运行维护补充
+
+- 总览趋势通过 `/api/overview/trends` 按浏览器当前时区偏移聚合最多 90 天，不再分页下载事件和日志明细；当前网站状态独立取各站最新记录。
+- `/api/notifications/diagnostics` 分类显示旧渠道限额、历史配置缺失和送达不确定。仅解释原因，不自动重试或更改送达状态；切换通知渠道不会把历史失败变成成功。
+- 每小时记录一次存储采样，保留最多 90 天容量统计；达到 24 小时跨度后估计净增长及剩余天数。预测不包含其他程序磁盘占用，不能替代磁盘监控。
+- 数据库恢复演练：`python scripts/verify_restore.py --db data/snapshots.db`。验证现有备份：`python scripts/verify_restore.py --backup data/backups/你的备份.db`。工具在临时目录恢复，不启动任何后台任务，不覆盖运行库。
+- 创建保留全部历史的只读归档副本：`python scripts/verify_restore.py --db data/snapshots.db --archive-to data/backups/archive-日期.db`。仅在演练通过后写入新文件；已有目标拒绝覆盖，源历史不删除。归档可复制到另一设备；SQLite 归档不包含 Gmail 密钥、账号配置及桥接卷，整机恢复需另行备份这些配置。
+
+
+### 不投递的访问告警
+
+历史投递队列里的 `ACCESS_DENIED` 待发送或暂停记录在升级时转为 `suppressed`（不投递），保留事件、尝试次数及原始原因。不计入待处理通知，不能重试。已提交和送达不确定的历史记录不自动改写。正常商品通知仍沿用原有人工核对与重试流程。

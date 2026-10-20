@@ -57,7 +57,7 @@ class Notifier:
                     event['payload'] = json.loads(event['payload'])
                 site = self.db.site(row['site_id'])
                 if event['kind'] == 'ACCESS_DENIED':
-                    self.finish(row['id'], 'held', '访问异常仅在后台记录，不推送'); continue
+                    self.finish(row['id'], 'suppressed', '访问异常仅在后台记录，不推送'); continue
                 try:
                     if not site['notify_enabled']: raise ValueError('通知已关闭')
                     if site.get('notification_channel') == 'email':

@@ -268,3 +268,12 @@ nav a.active::before{content:"";position:absolute;left:-18px;top:8px;bottom:8px;
 .ov-sites th:nth-child(1){width:24%}.ov-sites th:nth-child(5){width:26%}
 @media(max-width:1440px){.ov-donut-wrap{flex-direction:column;align-items:stretch;gap:16px}.ov-donut{align-self:center;flex-basis:auto;width:140px;height:140px}.ov-legend{gap:8px}.ov-actions>button .ui-icon{display:none}.ov-actions>button{padding-left:10px;padding-right:10px}}
 .ov-sites td:nth-child(3),.ov-sites td:nth-child(4){white-space:nowrap}
+
+/* Notification settings subsections share one primary navigation entry. */
+.notification-sections{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px;border-bottom:1px solid #e7ebee;padding-bottom:12px}
+.notification-sections a{display:inline-flex;align-items:center;min-height:40px;padding:8px 16px;border-radius:8px;text-decoration:none;color:#43534b;font-weight:600}
+.notification-sections a:hover{background:#f1f6f3;color:#24694b}
+.notification-sections a[aria-current=page]{background:#e7f3ec;color:#216448}
+.notification-sections a:focus-visible{outline:2px solid #2f8a5f;outline-offset:2px}
+
+.ch-intro{padding:16px 22px 0;margin:0}.ch-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:16px;padding:16px 22px 22px}.ch-card{padding:18px;display:flex;flex-direction:column;gap:4px;background:#fff}.ch-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:8px}.ch-head h3{font-size:14px;font-weight:600;margin:0 0 2px;color:var(--ink)}.ch-env{width:100%;font-size:12px;margin:2px 0 6px;border-collapse:collapse}.ch-env td{padding:5px 8px 5px 0!important;border-bottom:1px solid #f0f2f4;vertical-align:top}.ch-env td:first-child{white-space:nowrap}.ch-env code{font-size:11px;color:#3d5a4d;background:#f3f7f5;padding:2px 5px;border-radius:3px}.ch-card .small{margin:2px 0}.ch-apps a,.notify-link a{color:var(--accent);text-decoration:none}.ch-issue{color:#b65c51}.ch-test{display:flex;gap:8px;margin-top:auto;padding-top:10px}.ch-test .form-control,.ch-test .form-select{max-width:240px}@media(max-width:560px){.ch-grid{grid-template-columns:1fr;padding:14px}}
