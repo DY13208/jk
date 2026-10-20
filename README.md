@@ -1,8 +1,8 @@
 # 多网站电商商品监控
 
-日常 Chrome 可访问而自动化浏览器被拒绝时，可使用[日常 Chrome 扩展接入](docs/CHROME_EXTENSION.md)。目前扩展代码与后台接口已完成，真实站点验收需要先在日常 Chrome 中加载扩展并执行只读完整采集测试。
+2026-10-20 更新：新增 Gmail 发件箱、变化历史组合筛选与排序、独立通知投递队列（内容预览、渠道与接收目标）。给其他电脑安装或升级时，可直接转发[安装 / 更新提示词](docs/INSTALL_UPDATE_PROMPT.md)。
 
-2026-10-15 更新：已增加 Windows 本机 Chrome 采集进程并重新部署，可在网站设置选择运行位置。安装、配置、实测结果见 [本机采集说明](docs/HOST_COLLECTOR.md)。**Lecomte 的本机端到端测试仍遇到 HTTP 403，当前暂停，尚不能保证实际自动监控可用。** 下方旧版状态是初次交付记录。
+日常 Chrome 扩展与 Windows 本机采集的配置见[扩展接入](docs/CHROME_EXTENSION.md)和[本机采集说明](docs/HOST_COLLECTOR.md)。站点访问结果受网络、登录态和站点政策影响，以各自电脑的完整采集验收为准；历史测试不代表新安装一定可用。
 
 正式版本使用 **Crawl4AI 0.9.4 + 原有 diff_sqlite.py + APScheduler + SQLite + FastAPI**，提供中文 Web 管理后台。无需 EasySpider，也不再启动 changedetection.io。此前的研究、代码和回归测试保留供回溯，不参与正式 Compose 调度。
 
@@ -34,11 +34,11 @@ docker compose restart monitor                                       # 让调度
 2. Chrome 打开 `chrome://extensions` → 开启“开发者模式” → “加载已解压的扩展程序” → 选择 `chrome-extension/` 目录。
 3. 点击扩展图标 → **授权已配置网站**，允许访问扩展模式站点的域名。之后扩展每 30 秒向后台领取任务；浏览器关闭或电脑睡眠时不会运行。
 
-**通知 / Agent Mail**：在后台站点设置中选择通知方式并填写收件人后开启“通知”。Agent Mail CLI 的安装与登录见 [Agent Mail 说明](docs/AGENTMAIL.md)（宿主机运行 `scripts/Start-AgentMail.ps1`）；SMTP、企业微信、pushplus 等令牌只放在 `.env`。
+**通知 / Gmail / Agent Mail**：Gmail 可直接在“Gmail 发件箱”页面配置，通知详情见独立“通知投递队列”。在后台站点设置中选择通知方式并填写收件人后开启“通知”。Agent Mail CLI 的安装与登录见 [Agent Mail 说明](docs/AGENTMAIL.md)（宿主机运行 `scripts/Start-AgentMail.ps1`）；SMTP、企业微信、pushplus 等令牌只放在 `.env`。
 
 **说明**：首次成功采集只建立基线，不会发送“新品”通知；`niponino.fr` 可能对自动化访问返回 403/Cloudflare 验证，扩展模式（你自己的 Chrome）通常可通过。
 
-## 当前状态
+## 初次交付记录（历史，当前状态以本机后台为准）
 
 - 用户提供的成果已从 `C:\Users\YiRan\crawl-test` 复制到本项目，源目录未删除。
 - `data/snapshots.db` 保留原数据库全部记录，包括三轮 Crawl4AI（每轮 119 件）和三轮 EasySpider 的历史测试记录。只有通过原始 JSON 分页证据核验的 Crawl4AI 快照作为正式基线。
@@ -73,7 +73,7 @@ Linux 上首次部署到绑定目录时，确保 UID 1000 可写入 `data/`，�
 
 ## 中文后台使用
 
-左侧包含监控总览、网站管理、商品列表、变化历史、通知设置、执行日志。右上角可以立即创建 SQLite 一致性备份。
+左侧包含 Gmail 发件箱、监控总览、网站管理、商品列表、变化历史、通知投递队列、通知设置、执行日志。右上角可以立即创建 SQLite 一致性备份。
 
 ### 网站 1：Lecomte
 
@@ -173,3 +173,19 @@ This product includes software developed by UncleCode (https://x.com/unclecode) 
 个人微信通知已支持 pushplus，配置步骤见 [docs/PUSHPLUS.md](docs/PUSHPLUS.md)。
 
 微信扫码直连（腾讯 ClawBot），无需公众号或 pushplus Token，见 [docs/WEIXIN.md](docs/WEIXIN.md)。
+
+### Gmail 发件箱
+
+管理台左侧「Gmail 发件箱」可保存个人 Gmail 地址与应用专用密码、测试 SMTP 登录、发送带附件的邮件及查看最近 50 条手动发送记录。需先开启 Google 两步验证并创建应用专用密码，不使用 Google 登录密码。连接测试不会发送邮件，发送按钮会展示确认窗口。
+
+应用密码加密存于 `data/gmail.enc`，本机密钥为 `data/gmail.key`，均不进入 Git，也不进入 SQLite 备份；拥有这两个文件的人仍可解密，需保护宿主机目录权限。迁移时需同时保留这两个文件。不要将凭据贴到聊天中。
+
+保存后，网站的「邮件（SMTP）」通道优先使用此 Gmail 账号；未配置 Gmail 时继续使用原 SMTP 环境变量。网站通知仍需单独配置收件人并启用。SMTP 接受不等于收件箱送达；超时标为需核对且手动邮件不会自动重发。
+
+### 变化历史筛选
+
+“变化历史”支持按上架、下架、重新上架、降价、涨价和访问异常分类，并组合网站、商品名称或 ID、日期及币种筛选。支持时间、网站、商品名、价格、涨跌金额的正反序；所有筛选和排序在服务端分页前执行。日期使用浏览器本机时区并包含结束当天，价格按原币种排序，不进行汇率换算。当前筛选条件保存在本浏览器标签页。
+
+### 通知投递队列
+
+左侧“通知投递队列”独立展示网站通知的状态、方式、接收目标、尝试次数和结果，支持按网站、方式和状态筛选。“预览 / 详情”只读，不发送消息。后续投递在发送前保存最近一次尝试的渠道、接收目标和正文快照（邮件含 HTML）；历史缺失记录明确标注，预览按事件数据重建，当前网站设置不作为历史投递证据。邮件 HTML 在隔离预览中显示，禁用脚本和外部图片。接口接受不代表最终送达。群机器人或 pushplus 未提供名称时显示配置标识；微信显示绑定用户 ID。

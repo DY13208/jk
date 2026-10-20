@@ -15,6 +15,7 @@ from .mail_templates import LABELS, message
 from . import pushplus
 from . import weixin
 from . import product_images
+from .notification_history import snapshot, record
 
 
 def webhook(site):
@@ -58,7 +59,7 @@ class Notifier:
                 try:
                     if not site['notify_enabled']: raise ValueError('通知已关闭')
                     if site.get('notification_channel') == 'email':
-                        configuration(site)
+                        configuration(site, self.db)
                     elif site.get('notification_channel') == 'pushplus':
                         pushplus.token(site)
                     elif site.get('notification_channel') == 'weixin':
@@ -80,6 +81,7 @@ class Notifier:
                         continue
                     if len(content.encode('utf-8')) > 2048:
                         self.finish(row['id'], 'held', '消息超过企业微信文本长度限制'); continue
+                    record(self.db,row['id'],snapshot(site,content))
                     response = await self.sender(url, {'msgtype':'text','text':{'content':content}})
                     if response.status_code == 429:
                         self.retry(row, '企业微信 HTTP 429'); continue
@@ -95,9 +97,11 @@ class Notifier:
                     self.finish(row['id'], 'uncertain', '发送结果不确定，需人工核对后处理')
 
     async def deliver_email(self, row, site, event, content):
-        config = configuration(site)
+        config = configuration(site, self.db)
         with self.db.connect() as conn: summary = run_summary(conn, event.get('run_id'))
         mail = build_email(site, event, content, config, summary)
+        record(self.db,row['id'],snapshot(site,content,channel='email',recipients=config['recipients'],sender=config['sender'],
+                                        title=str(mail['Subject']),html=mail.get_body(preferencelist=('html',)).get_content()))
         try:
             refused = await asyncio.to_thread(self.email_sender, config, mail)
             if refused:
@@ -123,6 +127,7 @@ class Notifier:
                 conn.execute("UPDATE monitor_outbox SET status='pending',next_at=?,attempts=attempts-1 WHERE id=?", (last+15,row['id']))
                 return
         try:
+            record(self.db,row['id'],snapshot(site,content,channel='pushplus'))
             response = await self.sender(pushplus.ENDPOINT, {
                 'token':pushplus.token(site), 'title':content.splitlines()[0][:100],
                 'content':content, 'template':'txt', 'channel':'wechat'})
@@ -153,7 +158,13 @@ class Notifier:
         image_url=((event or {}).get('payload') or {}).get('product',{}).get('image')
         image=await product_images.attachment(image_url)
         try:
+            site=self.db.site(row['site_id'])
+            evidence=snapshot(site,content,channel='weixin',recipients=[state['recipient']] if state.get('recipient') else [])
+            record(self.db,row['id'],evidence)
             result=await weixin.request(self.db,'send',{'text':content,**({'image':image} if image else {})})
+            if result.get('recipient'):
+                evidence.update(recipients=[result['recipient']],recipient_label=result['recipient'])
+                record(self.db,row['id'],evidence)
             if result.get('ok') is True:
                 picture=('；图片接口已接受' if result.get('image_status')=='accepted' else
                          '；图片未确认，不自动重发文字' if image else

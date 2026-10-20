@@ -92,6 +92,17 @@ def create_app(db_path=None, scheduled=True):
         if scheduled: await app.state.service.stop()
     app = FastAPI(title='多网站商品监控',lifespan=lifespan)
     app.state.db = db
+    from .gmail import router as gmail_router
+    app.include_router(gmail_router(db))
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.exception_handlers import request_validation_exception_handler
+
+    @app.exception_handler(RequestValidationError)
+    async def safe_validation(request, exc):
+        if request.url.path.startswith('/api/gmail/'):
+            return JSONResponse({'detail':'填写内容无效，请检查邮箱、密码、主题及附件大小'}, status_code=422)
+        return await request_validation_exception_handler(request, exc)
+
 
     @app.middleware('http')
     async def guard(request: Request, call_next):
@@ -222,16 +233,47 @@ def create_app(db_path=None, scheduled=True):
         return {'items':items[offset:offset+limit],'total':len(items)}
 
     @app.get('/api/events')
-    def events(site_id: str|None=None,limit: int=Query(100,ge=1,le=500),offset: int=Query(0,ge=0)):
-        return db.history('monitor_events',site_id,limit,offset)
+    def events(site_id: str|None=None, kind: str=Query('',pattern=r'^$|^(NEW|REMOVED|RETURNED|PRICE_DROP|PRICE_RISE|ACCESS_DENIED)$'),
+               q: str=Query('',max_length=200), start: str='', end: str='', currency: str=Query('',max_length=12),
+               sort: str=Query('time_desc',pattern=r'^(time|site|name|price|change)_(asc|desc)$'),
+               limit: int=Query(100,ge=1,le=500), offset: int=Query(0,ge=0)):
+        from datetime import datetime, timezone
+        from .event_history import query_events
+        dates = []
+        for value in (start,end):
+            try:
+                parsed = datetime.fromisoformat(value.replace('Z','+00:00')) if value else None
+                if parsed and (parsed.tzinfo is None or parsed.utcoffset() is None): raise ValueError()
+                dates.append(parsed.astimezone(timezone.utc) if parsed else None)
+            except ValueError: raise HTTPException(400,'日期需要包含时区的有效时间') from None
+        if all(dates) and dates[0]>=dates[1]: raise HTTPException(400,'结束日期不能早于开始日期')
+        return query_events(db,site_id=site_id,kind=kind,q=q.strip(),start=dates[0].isoformat() if dates[0] else None,
+                            end=dates[1].isoformat() if dates[1] else None,currency=currency.strip(),sort=sort,limit=limit,offset=offset)
 
     @app.get('/api/logs')
     def logs(site_id: str|None=None,limit: int=Query(100,ge=1,le=500),offset: int=Query(0,ge=0)):
         return db.history('monitor_logs',site_id,limit,offset)
 
     @app.get('/api/notifications')
-    def notifications(limit: int=Query(100,ge=1,le=500),offset: int=Query(0,ge=0)):
-        return db.history('monitor_outbox',limit=limit,offset=offset)
+    def notifications(site_id: str='', status: str=Query('',pattern=r'^$|^(pending|sending|sent|held|uncertain)$'),
+                      channel: str=Query('',pattern=r'^$|^(weixin|wecom|pushplus|email|agentmail|unknown)$'),
+                      limit: int=Query(100,ge=1,le=500),offset: int=Query(0,ge=0)):
+        from .notification_history import listing
+        return listing(db,site_id=site_id,status=status,channel=channel,limit=limit,offset=offset)
+
+    @app.get('/api/notifications/{row_id}')
+    def notification_detail(row_id: int):
+        from .notification_history import detail
+        try: return detail(db,row_id)
+        except LookupError: raise HTTPException(404,'通知不存在') from None
+
+    @app.get('/api/notifications/{row_id}/preview',response_class=HTMLResponse)
+    def notification_preview(row_id: int):
+        data=notification_detail(row_id)
+        return HTMLResponse(data['preview']['html'],headers={
+            'Cache-Control':'no-store',
+            'Content-Security-Policy':"sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+            'Referrer-Policy':'no-referrer'})
 
     @app.get('/api/agentmail/status')
     def agentmail_status(): return agentmail.status(db)

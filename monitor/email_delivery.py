@@ -14,7 +14,11 @@ def recipients(value):
     return list(dict.fromkeys(addresses))
 
 
-def configuration(site):
+def configuration(site, db=None):
+    if db is not None:
+        from .gmail import load
+        local = load(db)
+        if local: return {**local, "recipients": recipients(site.get("email_to", ""))}
     host, sender = os.getenv('SMTP_HOST', '').strip(), os.getenv('SMTP_FROM', '').strip()
     if not host or not sender: raise ValueError('请在部署环境中配置 SMTP_HOST 和 SMTP_FROM')
     recipients(sender)

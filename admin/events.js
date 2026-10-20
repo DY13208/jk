@@ -1,0 +1,32 @@
+const eventDefaults={site_id:'',kind:'',q:'',from:'',to:'',currency:'',sort:'time_desc'};
+let eventFilters={...eventDefaults};
+try{const saved=JSON.parse(sessionStorage.getItem('event-filters')||'{}');for(const key of Object.keys(eventDefaults))if(typeof saved[key]==='string')eventFilters[key]=saved[key];}catch{}
+const eventSorts=[['time_desc','时间：最新在前'],['time_asc','时间：最早在前'],['site_asc','网站：正序'],['site_desc','网站：倒序'],['name_asc','商品名：正序'],['name_desc','商品名：倒序'],['price_asc','价格：从低到高'],['price_desc','价格：从高到低'],['change_asc','涨跌金额：从低到高'],['change_desc','涨跌金额：从高到低']];
+let eventAdvanced=false;
+function dateBoundary(value,next=false){const date=new Date(value+'T00:00:00');if(next)date.setDate(date.getDate()+1);return date.toISOString()}
+function eventHeading(key,label){const selected=eventFilters.sort.startsWith(key+'_');return `<button type="button" class="event-sort-heading" data-event-sort="${key}" aria-label="按${label}排序">${label}<span aria-hidden="true">${selected?(eventFilters.sort.endsWith('_asc')?'↑':'↓'):'↕'}</span></button>`}
+function eventMoney(value,currency){return value==null||value===''?'—':`${esc(value)} ${esc(currency||'')}`}
+function eventPrice(row){const product=row.payload.product||{},current=eventMoney(product.sale_price,product.currency);if(['PRICE_DROP','PRICE_RISE'].includes(row.kind))return `<span class="small">${eventMoney(row.payload.old_price,product.currency)} →</span><div>${current}</div>`;return current}
+async function eventsPage(){
+ const params=new URLSearchParams({sort:eventFilters.sort,offset:String(page*100)});
+ for(const key of ['site_id','kind','q','currency'])if(eventFilters[key])params.set(key,eventFilters[key]);
+ if(eventFilters.from)params.set('start',dateBoundary(eventFilters.from));if(eventFilters.to)params.set('end',dateBoundary(eventFilters.to,true));
+ const data=await api('events?'+params);
+ const options=(items,value)=>items.map(([key,label])=>`<option value="${esc(key)}" ${key===value?'selected':''}>${esc(label)}</option>`).join('');
+ const kinds=[['','全部变化'],['NEW','新品上架'],['REMOVED','商品下架'],['RETURNED','重新上架'],['PRICE_DROP','价格下降'],['PRICE_RISE','价格上涨'],['ACCESS_DENIED','访问异常']];
+ const tabs=`<div class="event-types" role="group" aria-label="变化分类">${kinds.map(([key,label])=>`<button type="button" data-event-kind="${key}" aria-pressed="${key===eventFilters.kind}" class="${key===eventFilters.kind?'selected':''}">${label}<span>${key?(data.kind_counts[key]||0):Object.values(data.kind_counts).reduce((a,b)=>a+b,0)}</span></button>`).join('')}</div>`;
+ const filters=`<form id="event-filters" class="event-filters"><div class="event-filter-main"><label>网站<select name="site_id" aria-label="筛选网站">${options([['','全部网站'],...sites.map(s=>[s.id,s.name])],eventFilters.site_id)}</select></label><label class="event-keyword">搜索记录<input name="q" value="${esc(eventFilters.q)}" maxlength="200" placeholder="商品名称、ID 或异常信息"></label><label>排序<select name="sort" aria-label="排序方式">${options(eventSorts,eventFilters.sort)}</select></label><div class="actions"><button class="primary" type="submit">筛选</button><button id="event-reset" type="button">重置</button></div></div><details class="event-advanced" ${eventAdvanced||eventFilters.from||eventFilters.to||eventFilters.currency?'open':''}><summary>日期与币种${eventFilters.from||eventFilters.to||eventFilters.currency?' · 已设置':''}</summary><div class="event-filter-more"><label>开始日期<input name="from" type="date" value="${esc(eventFilters.from)}"></label><label>结束日期<input name="to" type="date" value="${esc(eventFilters.to)}"></label><label>币种<select name="currency">${options([['','全部币种'],...data.currencies.map(c=>[c,c])],eventFilters.currency)}</select></label><span class="event-filter-hint">日期按本机时区，包含结束当天。不同币种不作汇率换算。</span></div></details></form>`;
+ const rows=data.items.map(row=>{const product=row.payload.product||{};const name=product.name||row.payload.message||'—';const url=product.url;const link=typeof url==='string'&&/^https?:\/\//i.test(url)?`<a class="product-name" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(name)} ↗</a>`:esc(name);const delta=row.price_change;return [time(row.at),esc(row.site_name||row.site_id),badge(row.kind),`${link}${row.product_id?`<div class="small">ID ${esc(row.product_id)}</div>`:''}`,eventPrice(row),delta==null?'—':`<span class="${delta<0?'event-drop':'event-rise'}">${delta>0?'+':''}${esc(Number(delta.toFixed(2)))} ${esc(product.currency||'')}</span>`]});
+ const body=rows.length?table([eventHeading('time','时间'),eventHeading('site','网站'),'变化类型',eventHeading('name','商品 / 信息'),eventHeading('price','价格'),eventHeading('change','涨跌金额')],rows):'<div class="empty"><strong>没有符合条件的变化</strong><span>试试切换分类、放宽日期范围，或点击“重置”。</span></div>';
+ return `<div class="events-workspace">${tabs}${filters}${panel('筛选结果',body+pager(data.total),`<span class="event-result-count" role="status">共 ${data.total} 条记录</span>`)}</div>`;
+}
+function bindEvents(){
+ const form=$('#event-filters');
+ function apply(overrides={}){if(!form.reportValidity())return;const values=Object.fromEntries(new FormData(form));const from=form.elements.from,to=form.elements.to;to.setCustomValidity('');if(from.value&&to.value&&from.value>to.value){to.setCustomValidity('结束日期不能早于开始日期');to.reportValidity();return}eventAdvanced=form.querySelector('details').open;eventFilters={...eventFilters,...values,...overrides};try{sessionStorage.setItem('event-filters',JSON.stringify(eventFilters))}catch{}page=0;render()}
+ form.onsubmit=e=>{e.preventDefault();apply()};form.elements.to.oninput=()=>form.elements.to.setCustomValidity('');form.elements.from.oninput=()=>form.elements.to.setCustomValidity('');
+ for(const key of ['site_id','sort','currency'])form.elements[key].onchange=()=>apply();
+ form.querySelector('details').ontoggle=e=>{eventAdvanced=e.target.open};
+ $('#event-reset').onclick=()=>{eventFilters={...eventDefaults};eventAdvanced=false;try{sessionStorage.removeItem('event-filters')}catch{}page=0;render()};
+ document.querySelectorAll('[data-event-kind]').forEach(button=>button.onclick=()=>apply({kind:button.dataset.eventKind}));
+ document.querySelectorAll('[data-event-sort]').forEach(button=>{const key=button.dataset.eventSort,selected=eventFilters.sort.startsWith(key+'_');if(selected)button.closest('th').setAttribute('aria-sort',eventFilters.sort.endsWith('_asc')?'ascending':'descending');button.onclick=()=>apply({sort:key+(selected&&eventFilters.sort.endsWith('_asc')?'_desc':'_asc')})});
+}

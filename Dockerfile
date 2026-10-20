@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends xvfb xauth tini
     && rm /tmp/chrome.deb && rm -rf /var/lib/apt/lists/*
 COPY requirements-images.txt .
 RUN pip install --no-cache-dir -r requirements-images.txt
+COPY requirements-gmail.txt .
+RUN pip install --no-cache-dir -r requirements-gmail.txt
 COPY monitor monitor
 COPY adapters adapters
 COPY admin admin

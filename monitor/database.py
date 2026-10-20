@@ -139,6 +139,9 @@ class Database:
             columns = {r['name'] for r in db.execute('PRAGMA table_info(monitor_sites)')}
             for column, definition in [('notification_channel', "TEXT NOT NULL DEFAULT 'wecom'"), ('email_to', "TEXT NOT NULL DEFAULT ''")]:
                 if column not in columns: db.execute(f'ALTER TABLE monitor_sites ADD COLUMN {column} {definition}')
+            outbox_columns = {r['name'] for r in db.execute('PRAGMA table_info(monitor_outbox)')}
+            if 'delivery_snapshot' not in outbox_columns:
+                db.execute('ALTER TABLE monitor_outbox ADD COLUMN delivery_snapshot TEXT')
             seed = os.getenv('SITES_SEED')
             # Fresh databases only, so sites the owner later deletes are not resurrected on restart.
             if seed and Path(seed).is_file() and not db.execute('SELECT 1 FROM monitor_sites LIMIT 1').fetchone():
@@ -191,8 +194,7 @@ class Database:
             p['original_price'] = money(p.get('original_price'))
         if not meta.get('started'): raise CollectionError('快照时间缺失')
 
-    @staticmethod
-    def site_dict(row):
+    def site_dict(self, row):
         site = dict(row)
         for key in ('adapter_config', 'event_rules'): site[key] = json.loads(site[key])
         for key in ('enabled', 'permission_confirmed', 'notify_enabled'): site[key] = bool(site[key])
@@ -205,7 +207,7 @@ class Database:
             site['pushplus_configured'] = False
         from .email_delivery import configuration
         try:
-            configuration(site)
+            configuration(site, self)
             site['email_configured'] = True
         except ValueError:
             site['email_configured'] = False

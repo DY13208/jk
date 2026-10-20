@@ -121,7 +121,14 @@ def claim(db):
                 conn.execute("UPDATE monitor_outbox SET status='held',last_error='访问异常仅在后台记录，不推送' WHERE id=?", (row['id'],)); continue
             event['payload'] = json.loads(event['payload'])
             conn.execute("UPDATE monitor_outbox SET status='sending',claimed_at=?,attempts=attempts+1 WHERE id=?", (time.time(), row['id']))
-            return _job('outbox', row['id'], site, event, addresses, run_summary(conn, event.get('run_id')))
+            job=_job('outbox', row['id'], site, event, addresses, run_summary(conn, event.get('run_id')))
+            from .notification_history import snapshot
+            worker=conn.execute("SELECT value FROM monitor_meta WHERE key='agentmail_worker'").fetchone()
+            worker=json.loads(worker[0]) if worker else {}
+            sender=(worker.get('cli') or {}).get('account') or worker.get('account','')
+            evidence=snapshot(site,job['text'],channel='agentmail',recipients=addresses,sender=sender,title=job['subject'],html=job['html'])
+            conn.execute('UPDATE monitor_outbox SET delivery_snapshot=? WHERE id=?',(json.dumps(evidence,ensure_ascii=False),row['id']))
+            return job
         return None
 
 

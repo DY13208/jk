@@ -73,7 +73,7 @@ http.createServer(async(req,res)=>{
     const supplied=String(req.headers['x-weixin-token']||'');
     if(!wanted||Buffer.byteLength(supplied)!==Buffer.byteLength(wanted)||!timingSafeEqual(Buffer.from(supplied),Buffer.from(wanted)))return reply(403,{error:'unauthorized'});
     if(req.method==='GET'&&req.url==='/status'){
-      const a=account();return reply(200,{running:true,bound:Boolean(a),ready:Boolean(a)&&online&&usable(state)&&!login,online,auth,
+      const a=account();return reply(200,{running:true,bound:Boolean(a),ready:Boolean(a)&&online&&usable(state)&&!login,online,auth,recipient:a?.userId||'',
         remaining:Math.max(0,9-(state.used||0)),message:!a?'请扫码绑定微信':!online?'正在连接微信，尚未验证会话':!usable(state)?'请给微信 ClawBot 发一句话以激活或续期':'会话可用于发送，尚不代表新通知已送达'});
     }
     if(req.method!=='POST')return reply(404,{error:'not found'});
@@ -100,7 +100,7 @@ http.createServer(async(req,res)=>{
             const uploaded=await uploadFileToWeixin({filePath,toUserId:a.userId,opts,cdnBaseUrl:'https://novac2c.cdn.weixin.qq.com/c2c'});
             await sendImageMessageWeixin({to:a.userId,text:'',uploaded,opts,filePath,mediaMime:'image/jpeg'});
           }});
-        return reply(200,result);
+        return reply(200,{...result,recipient:a.userId});
       }catch{state.context=null;save();return reply(502,{error:'delivery uncertain'});}
       finally{sending=false;}
     }
