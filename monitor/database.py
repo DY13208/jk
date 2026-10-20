@@ -205,6 +205,12 @@ class Database:
             site['pushplus_configured'] = True
         except ValueError:
             site['pushplus_configured'] = False
+        from . import push
+        try:
+            push.config(site)
+            site['push_configured'] = True
+        except ValueError:
+            site['push_configured'] = False
         from .email_delivery import configuration
         try:
             configuration(site, self)

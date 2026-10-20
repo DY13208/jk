@@ -1,5 +1,5 @@
 let deliveryFilters={site_id:'',status:'',channel:''};
-const deliveryChannels={weixin:'微信扫码直连',wecom:'企业微信机器人',pushplus:'个人微信（pushplus）',email:'邮件（SMTP / Gmail）',agentmail:'Agent Mail',unknown:'历史未留存'};
+const deliveryChannels={weixin:'微信扫码直连',wecom:'企业微信机器人',bark:'Bark',ntfy:'ntfy',pushplus:'个人微信（pushplus）',email:'邮件（SMTP / Gmail）',agentmail:'Agent Mail',unknown:'历史未留存'};
 const deliveryBasis={captured:'最近一次发送尝试',planned:'待发送 · 当前配置',legacy:'历史信息未留存'};
 async function deliveryPage(){
  const params=new URLSearchParams({...deliveryFilters,offset:String(page*100)});

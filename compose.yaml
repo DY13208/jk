@@ -35,6 +35,13 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
       PUSHPLUS_LECOMTE_TOKEN: ${PUSHPLUS_LECOMTE_TOKEN:-}
       PUSHPLUS_SITE2_TOKEN: ${PUSHPLUS_SITE2_TOKEN:-}
+      BARK_KEY: ${BARK_KEY:-}
+      BARK_SERVER: ${BARK_SERVER:-}
+      BARK_ALLOW_HTTP: ${BARK_ALLOW_HTTP:-}
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_SERVER: ${NTFY_SERVER:-}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
+      NTFY_ALLOW_HTTP: ${NTFY_ALLOW_HTTP:-}
     shm_size: 1gb
     restart: unless-stopped
     stop_grace_period: 40s

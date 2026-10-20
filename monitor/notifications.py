@@ -13,6 +13,7 @@ from .email_delivery import configuration, build_email, send_email
 
 from .mail_templates import LABELS, message
 from . import pushplus
+from . import push
 from . import weixin
 from . import product_images
 from .notification_history import snapshot, record
@@ -34,9 +35,9 @@ class Notifier:
         self.lock = asyncio.Lock()
 
     @staticmethod
-    async def send(url, payload):
+    async def send(url, payload, headers=None):
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
-            return await client.post(url, json=payload)
+            return await client.post(url, json=payload, headers=headers)
 
     async def dispatch(self):
         if self.lock.locked(): return
@@ -62,6 +63,8 @@ class Notifier:
                         configuration(site, self.db)
                     elif site.get('notification_channel') == 'pushplus':
                         pushplus.token(site)
+                    elif site.get('notification_channel') in push.CHANNELS:
+                        push.config(site)
                     elif site.get('notification_channel') == 'weixin':
                         pass  # Credentials are kept only inside the isolated official bridge.
                     else:
@@ -69,6 +72,9 @@ class Notifier:
                 except ValueError as exc:
                     self.finish(row['id'], 'held', str(exc)); continue
                 try:
+                    if site.get('notification_channel') in push.CHANNELS:
+                        await self.deliver_push(row, site, event)
+                        continue
                     content = message(site, event)
                     if site.get('notification_channel') == 'weixin':
                         await self.deliver_weixin(row,content,event)
@@ -145,6 +151,39 @@ class Notifier:
             self.retry(row, '无法连接 pushplus')
         except Exception:
             self.finish(row['id'], 'uncertain', 'pushplus 接收结果不确定，请核对消息记录后再重试')
+
+    async def deliver_push(self, row, site, event):
+        channel = site['notification_channel']
+        with self.db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            # Gentle global spacing per provider (ntfy.sh/Bark public servers rate-limit bursts).
+            last = conn.execute("SELECT MAX(o.claimed_at) FROM monitor_outbox o JOIN monitor_sites s ON s.id=o.site_id WHERE s.notification_channel=? AND o.id!=? AND o.status IN ('sent','uncertain')", (channel,row['id'])).fetchone()[0]
+            if last and time.time() - last < 5:
+                conn.execute("UPDATE monitor_outbox SET status='pending',next_at=?,attempts=attempts-1 WHERE id=?", (last+5,row['id']))
+                return
+            # Batch the site's other due events into the same push (one notification per crawl, not per product).
+            others = [dict(r) for r in conn.execute("SELECT o.* FROM monitor_outbox o JOIN monitor_events e ON e.id=o.event_id WHERE o.site_id=? AND o.status='pending' AND o.next_at<=? AND o.id!=? AND e.kind!='ACCESS_DENIED' ORDER BY o.id LIMIT 49", (row['site_id'],time.time(),row['id']))]
+            events = [event]
+            for other in others:
+                conn.execute("UPDATE monitor_outbox SET status='sending',claimed_at=?,attempts=attempts+1 WHERE id=?", (time.time(),other['id']))
+                e = dict(conn.execute('SELECT * FROM monitor_events WHERE id=?', (other['event_id'],)).fetchone())
+                e['payload'] = json.loads(e['payload']); events.append(e)
+        rows = [row] + others
+        try:
+            url, headers, extra = push.config(site)
+            note = push.build(site, events)
+            for r in rows: record(self.db, r['id'], snapshot(site, note['title']+'\n'+note['body'], channel=channel, title=note['title']))
+            body = push.payload(channel, note, extra)
+            response = await (self.sender(url, body, headers) if headers else self.sender(url, body))
+            state, reason = push.outcome(channel, response)
+        except httpx.ConnectError:
+            state, reason = 'retry', f'无法连接 {channel}'
+        except Exception:
+            state, reason = 'uncertain', f'{channel} 发送结果不确定，请在手机上核对'
+        if len(rows) > 1 and state in ('sent', 'uncertain'): reason += f'（{len(rows)} 条事件合并为一条推送）'
+        for r in rows:
+            if state == 'retry': self.retry(r, reason)
+            else: self.finish(r['id'], state, reason)
 
     async def deliver_weixin(self,row,content,event=None):
         state=await weixin.status(self.db)

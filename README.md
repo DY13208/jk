@@ -174,6 +174,8 @@ This product includes software developed by UncleCode (https://x.com/unclecode) 
 
 微信扫码直连（腾讯 ClawBot），无需公众号或 pushplus Token，见 [docs/WEIXIN.md](docs/WEIXIN.md)。
 
+Bark（iPhone）与 ntfy（Android/iPhone）手机推送：无需每日激活，配置步骤见 [docs/PUSH.md](docs/PUSH.md)。
+
 ### Gmail 发件箱
 
 管理台左侧「Gmail 发件箱」可保存个人 Gmail 地址与应用专用密码、测试 SMTP 登录、发送带附件的邮件及查看最近 50 条手动发送记录。需先开启 Google 两步验证并创建应用专用密码，不使用 Google 登录密码。连接测试不会发送邮件，发送按钮会展示确认窗口。

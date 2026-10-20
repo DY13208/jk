@@ -17,6 +17,8 @@ from .email_delivery import recipients
 from . import agentmail
 from . import host_collector
 from . import weixin
+from . import push
+import httpx
 from .mail_templates import render_html, LABELS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,7 +37,7 @@ class SiteInput(BaseModel):
     event_rules: list[str] = Field(default_factory=lambda:EVENTS.copy())
     notify_enabled: bool = False
     webhook_env: str = Field(default='',pattern=r'^$|^[A-Z][A-Z0-9_]{0,79}$')
-    notification_channel: str = Field(default='wecom',pattern=r'^(wecom|email|agentmail|pushplus|weixin)$')
+    notification_channel: str = Field(default='wecom',pattern=r'^(wecom|email|agentmail|pushplus|weixin|bark|ntfy)$')
     email_to: str = Field(default='',max_length=2000)
 
     @model_validator(mode='after')
@@ -43,6 +45,8 @@ class SiteInput(BaseModel):
         if self.email_to: recipients(self.email_to)
         if self.notify_enabled and self.notification_channel in ('email','agentmail') and not self.email_to:
             raise ValueError('启用邮件推送前请填写收件邮箱')
+        if self.notify_enabled and self.notification_channel in ('bark','ntfy') and not self.webhook_env:
+            raise ValueError('启用 Bark/ntfy 推送前请填写保存 Key/主题 的环境变量名（如 BARK_KEY、NTFY_TOPIC）')
         if self.notify_enabled and self.notification_channel == 'pushplus' and not self.webhook_env:
             raise ValueError('启用个人微信推送前请填写 pushplus Token 环境变量名')
         parsed = urlsplit(self.url)
@@ -92,6 +96,8 @@ def create_app(db_path=None, scheduled=True):
         if scheduled: await app.state.service.stop()
     app = FastAPI(title='多网站商品监控',lifespan=lifespan)
     app.state.db = db
+    from .notifications import Notifier
+    app.state.push_sender = Notifier.send
     from .gmail import router as gmail_router
     app.include_router(gmail_router(db))
     from fastapi.exceptions import RequestValidationError
@@ -256,7 +262,7 @@ def create_app(db_path=None, scheduled=True):
 
     @app.get('/api/notifications')
     def notifications(site_id: str='', status: str=Query('',pattern=r'^$|^(pending|sending|sent|held|uncertain)$'),
-                      channel: str=Query('',pattern=r'^$|^(weixin|wecom|pushplus|email|agentmail|unknown)$'),
+                      channel: str=Query('',pattern=r'^$|^(weixin|wecom|pushplus|bark|ntfy|email|agentmail|unknown)$'),
                       limit: int=Query(100,ge=1,le=500),offset: int=Query(0,ge=0)):
         from .notification_history import listing
         return listing(db,site_id=site_id,status=status,channel=channel,limit=limit,offset=offset)
@@ -292,6 +298,23 @@ def create_app(db_path=None, scheduled=True):
             raise HTTPException(400,'请填写微信要求的数字配对码')
         try: return await weixin.request(db,action,{'code':body.get('code')} if action=='verify' else {})
         except Exception: raise HTTPException(503,'微信连接服务暂不可用，请检查服务状态') from None
+
+    @app.post('/api/sites/{site_id}/push-test')
+    async def push_test(site_id: str, payload: dict, request: Request):
+        # Explicit admin click only: sends one test notification through the site's Bark/ntfy settings.
+        if not payload.get('confirm'): raise HTTPException(400,'请确认后再发送测试推送')
+        site = db.site(site_id)
+        if not site: raise HTTPException(404,'站点不存在')
+        if site['notification_channel'] not in push.CHANNELS: raise HTTPException(409,'该站点未选择 Bark 或 ntfy')
+        try: url, headers, extra = push.config(site)
+        except ValueError as exc: raise HTTPException(409,str(exc)) from exc
+        note = push.build(site,[{'id':0,'kind':'TEST','payload':{}}])
+        note['title'] = f"【测试】商品监控推送 · {site['name']}"
+        note['body'] = '这是一条从后台手动发送的测试推送；收到即说明配置正确。'
+        try: response = await request.app.state.push_sender(url, push.payload(site['notification_channel'],note,extra), headers)
+        except httpx.HTTPError: raise HTTPException(502,'无法连接推送服务器') from None
+        state, reason = push.outcome(site['notification_channel'], response)
+        return {'status':state,'message':reason}
 
     @app.post('/api/agentmail/test',status_code=202)
     def agentmail_test(payload: MailTestInput):
