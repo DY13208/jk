@@ -114,19 +114,25 @@ async function collectGeneric(site) {
       await waitComplete(tab.id);
       await message('正在完整采集：' + site.id + ' · 第 ' + page + ' 页', 'running', site.id, {page});
       const baseSelector = cfg.schema?.baseSelector || null;
-      let results = await executeCapture({target: {tabId: tab.id}, func: capturePage,
-        args: [{origin, visited, baseSelector}]});
-      let result = results[0]?.result;
-      if (result && result.cards === 0) {
+      const capture = async () => (await executeCapture({target: {tabId: tab.id}, func: capturePage,
+        args: [{origin, visited, baseSelector}]}))[0]?.result;
+      let result = await capture();
+      // No result = the page navigated while the script ran (e.g. a Cloudflare check clearing and reloading the
+      // page) or the frame was replaced; wait for the new document and capture again (twice at most).
+      for (let retry = 0; retry < 2 && !result; retry++) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        await waitComplete(tab.id);
+        result = await capture();
+      }
+      if (result && !result.error && result.cards === 0) {
         // Card selector known but nothing rendered: reload once (slow render / interrupted load) before giving up.
         await chrome.tabs.reload(tab.id);
         await new Promise(resolve => setTimeout(resolve, 1500));
         await waitComplete(tab.id);
-        results = await executeCapture({target: {tabId: tab.id}, func: capturePage,
-          args: [{origin, visited, baseSelector}]});
-        result = results[0]?.result;
+        result = await capture();
       }
-      if (!result?.html) throw Error('采集没有返回页面内容');
+      if (result?.error) throw Error(result.error);
+      if (!result?.html) throw Error('采集没有返回页面内容：页面在采集过程中多次跳转或标签页被关闭（第 ' + page + ' 页）');
       checkpoints.push({page, url: result.url, html: result.html, cards: result.cards, title: result.title});
       visited.push(result.url);
       if (!result.next || visited.includes(result.next)) return {checkpoints};

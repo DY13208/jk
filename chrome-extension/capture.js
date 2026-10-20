@@ -55,6 +55,10 @@ async function captureCatalogue(settings) {
 // Generic sites: injected only into an app-created tab for a configured site. Returns a sanitized DOM of the
 // current listing page plus the next-page URL. Form values, scripts and cookies are never exported.
 async function capturePage(settings) {
+  // Never throw out of an injected function: Chrome turns a rejected promise into an empty result, which hid
+  // the real reason (e.g. ACCESS_DENIED) behind "采集没有返回页面内容". Errors are returned explicitly instead.
+  try {
+    return await (async () => {
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const check = () => {
     if (location.origin !== settings.origin) throw Error('采集标签页离开了配置的网站');
@@ -146,4 +150,8 @@ async function capturePage(settings) {
   const html = '<html><head><title>' + document.title.replace(/</g, '') + '</title>' + rels + '</head>' + clone.outerHTML + '</html>';
   if (html.length > 3800000) throw Error('页面过大，无法安全回传');
   return {html, url: location.href.split('#')[0], next, cards: cardCount(), title: document.title.slice(0, 200)};
+    })();
+  } catch (e) {
+    return {error: String(e?.message || e).slice(0, 300), title: document.title.slice(0, 200), url: location.href.split('#')[0]};
+  }
 }

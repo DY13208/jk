@@ -124,11 +124,14 @@ def collect_bergzeit(url, config, fetch=None):
     tolerance = int(config.get('total_tolerance', 1))
     def get(target):
         # Transient empty/5xx answers are retried once; 403/429 stop immediately (pause semantics).
-        for attempt in range(2):
-            status, html = fetch(target)
+        # 503/5xx/connection errors are usually short overloads at Bergzeit: back off 10 s, 30 s, 60 s.
+        delays = config.get('retry_delays', [10, 30, 60])
+        for attempt in range(len(delays) + 1):
+            try: status, html = fetch(target)
+            except OSError as exc: status, html = f'{type(exc).__name__}', ''
             if status in (403, 429): raise CollectionError(f'站点拒绝访问 HTTP {status}；任务已暂停', status)
             if status == 200 and 'elementsList: ' in html: return html
-            if attempt == 0: time.sleep(max(3, config.get('page_delay', 1.5)))
+            if attempt < len(delays): time.sleep(delays[attempt])
         raise CollectionError(f'页面请求失败或缺少商品数据（HTTP {status}）；未提交快照', status)
     def crawl():
         products, logs, counts = {}, [], []
