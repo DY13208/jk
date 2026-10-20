@@ -311,7 +311,7 @@ def create_app(db_path=None, scheduled=True):
         note = push.build(site,[{'id':0,'kind':'TEST','payload':{}}])
         note['title'] = f"【测试】商品监控推送 · {site['name']}"
         note['body'] = '这是一条从后台手动发送的测试推送；收到即说明配置正确。'
-        try: response = await request.app.state.push_sender(url, push.payload(site['notification_channel'],note,extra), headers)
+        try: response = await request.app.state.push_sender(url, push.payload(site['notification_channel'],note,extra,site.get('name') or ''), headers)
         except httpx.HTTPError: raise HTTPException(502,'无法连接推送服务器') from None
         state, reason = push.outcome(site['notification_channel'], response)
         return {'status':state,'message':reason}

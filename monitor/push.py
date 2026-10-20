@@ -56,6 +56,19 @@ def _line(site, event):
     return f"{LABELS[event['kind']]}：{p['name']} · {price}" + (f"（原 {old}）" if old is not None else '')
 
 
+def _http(u):
+    u = str(u or '').strip()
+    p = urlsplit(u)
+    return u if p.scheme in ('http', 'https') and p.hostname else ''
+
+
+def tap_url(site, events):
+    """URL opened when the push is tapped: the product page when exactly one product is involved, else the site URL."""
+    urls = {_http(((e.get('payload') or {}).get('product') or {}).get('url')) for e in events if e.get('kind') in LABELS}
+    urls.discard('')
+    return urls.pop() if len(urls) == 1 else _http(site.get('url'))
+
+
 def build(site, events):
     """Return a provider-neutral notification dict for one or more events of a site."""
     kinds = [e['kind'] for e in events]
@@ -67,10 +80,7 @@ def build(site, events):
         lines = [_line(site, e) for e in events[:MAX_LINES]]
         if len(events) > MAX_LINES: lines.append(f'…另有 {len(events) - MAX_LINES} 项，请在后台查看')
         body = '\n'.join(lines)
-    url = ''
-    if len(events) == 1 and events[0]['kind'] in LABELS:
-        u = str(events[0]['payload']['product'].get('url') or '')
-        url = u if urlsplit(u).scheme in ('http', 'https') else ''
+    url = tap_url(site, events)
     image = ''
     if len(events) == 1 and events[0]['kind'] in LABELS:
         i = str(events[0]['payload']['product'].get('image') or '')
@@ -80,9 +90,9 @@ def build(site, events):
             'tags': sorted({TAGS.get(k, 'bell') for k in kinds})[:5]}
 
 
-def payload(channel, note, extra):
+def payload(channel, note, extra, site_name=''):
     if channel == 'bark':
-        data = {'device_key': extra['device_key'], 'title': note['title'], 'body': note['body'], 'group': GROUP,
+        data = {'device_key': extra['device_key'], 'title': note['title'], 'body': note['body'], 'group': (site_name or GROUP)[:64],
                 'level': 'timeSensitive' if note['urgent'] else 'active'}
         if note['url']: data['url'] = note['url']
         if note['image']: data['icon'] = note['image']

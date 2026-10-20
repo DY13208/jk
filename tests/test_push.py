@@ -115,3 +115,22 @@ def test_chinese_payload_sent_as_utf8_json(monkeypatch):
     assert _json.loads(seen['body'].decode('utf-8'))['title'] == '商品监控测试推送'
     ntfy = push.encode(push.payload('ntfy', note, {'topic': TOPIC}))[0]
     assert _json.loads(ntfy.decode('utf-8'))['title'] == '商品监控测试推送'
+
+
+def test_tap_url_single_digest_and_site_fallback(monkeypatch):
+    monkeypatch.setenv('BARK_KEY', KEY); monkeypatch.setenv('NTFY_TOPIC', TOPIC)
+    site = {**SITE, 'name': '始祖鸟店', 'url': 'https://shop.example.test/list'}
+    _, _, extra = push.config(site)
+    one = push.payload('bark', push.build(site, [ev('NEW', 1)]), extra, site['name'])
+    assert one['url'] == 'https://example.test/p-1' and one['group'] == '始祖鸟店'
+    same = push.build(site, [ev('NEW', 1), ev('PRICE_DROP', 1, old='20.00')])
+    assert same['url'] == 'https://example.test/p-1'
+    many = push.build(site, [ev('NEW', i) for i in range(3)])
+    assert many['url'] == 'https://shop.example.test/list'
+    ntfy = push.payload('ntfy', many, {'topic': TOPIC})
+    assert ntfy['click'] == 'https://shop.example.test/list'
+    test = push.build(site, [{'id': 0, 'kind': 'TEST', 'payload': {}}])
+    assert test['url'] == 'https://shop.example.test/list'
+    bad = {**site, 'url': 'javascript:alert(1)'}
+    e = ev('NEW', 1); e['payload']['product']['url'] = 'ftp://x.test/a'
+    assert push.build(bad, [e])['url'] == '' and 'url' not in push.payload('bark', push.build(bad, [e]), extra)

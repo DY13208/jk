@@ -174,7 +174,7 @@ class Notifier:
             url, headers, extra = push.config(site)
             note = push.build(site, events)
             for r in rows: record(self.db, r['id'], snapshot(site, note['title']+'\n'+note['body'], channel=channel, title=note['title']))
-            body = push.payload(channel, note, extra)
+            body = push.payload(channel, note, extra, site.get('name') or '')
             response = await (self.sender(url, body, headers) if headers else self.sender(url, body))
             state, reason = push.outcome(channel, response)
         except httpx.ConnectError:
