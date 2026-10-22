@@ -301,7 +301,9 @@ class Database:
                 cur = db.execute('INSERT INTO monitor_events(site_id,run_id,product_id,kind,at,payload) VALUES(?,?,?,?,?,?)',
                     (site_id,rid,pid,kind,now(),encode(payload)))
                 emitted.append({'id':cur.lastrowid,'kind':kind,'product_id':pid})
-                if site['notify_enabled'] and kind in site['event_rules']:
+                if (site['notify_enabled'] and kind in site['event_rules']
+                    and not (kind == 'PRICE_DROP' and Decimal(str(old_price)) > 0
+                             and (Decimal(str(old_price)) - Decimal(str(product['sale_price']))) < Decimal(str(old_price)) * Decimal('0.10'))):
                     db.execute('INSERT INTO monitor_outbox(event_id,site_id) VALUES(?,?)', (cur.lastrowid,site_id))
             return rid, emitted
 

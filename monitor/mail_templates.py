@@ -10,9 +10,9 @@ from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
 
 LABELS = {'NEW':'新品上架','REMOVED':'商品下架','RETURNED':'重新上架','PRICE_DROP':'价格下降','PRICE_RISE':'价格上涨'}
-ALERT_LABELS = {'ACCESS_DENIED':'访问拒绝告警','TEST':'测试邮件'}
+ALERT_LABELS = {'DIGEST':'网站变动合集','ACCESS_DENIED':'访问拒绝告警','TEST':'测试邮件'}
 # Restrained accents: (pill text, pill background)
-ACCENTS = {'NEW':('#067647','#ecfdf3'),'REMOVED':('#b42318','#fef3f2'),'RETURNED':('#175cd3','#eff8ff'),
+ACCENTS = {'DIGEST':('#175cd3','#eff8ff'),'NEW':('#067647','#ecfdf3'),'REMOVED':('#b42318','#fef3f2'),'RETURNED':('#175cd3','#eff8ff'),
            'PRICE_DROP':('#067647','#ecfdf3'),'PRICE_RISE':('#b54708','#fffaeb'),'ACCESS_DENIED':('#b42318','#fef3f2'),
            'TEST':('#5925dc','#f4f3ff')}
 HEADLINES = {'NEW':'上架了一件新商品','REMOVED':'一件商品已下架','RETURNED':'一件商品重新上架',
@@ -32,6 +32,9 @@ def admin_url(): return os.getenv('MONITOR_ADMIN_URL', 'http://127.0.0.1:8080').
 
 def message(site, event):
     payload = event['payload']
+    if event['kind'] == 'DIGEST':
+        events = payload['events']
+        return f"网站变动合集 · {site['name']} · {len(events)} 条变动\n\n" + '\n\n'.join(message(site, item) for item in events)
     if event['kind'] == 'ACCESS_DENIED':
         return f"商品监控告警 · {site['name']}\n{payload['message']}\n请核对站点政策和访问许可后人工恢复。"
     if event['kind'] == 'TEST':
@@ -169,7 +172,18 @@ def render_html(site, event, summary=None):
     if summary and summary.get('changes'): facts.append(f"共 {summary['changes']} 条变化")
     meta_line = ' · '.join(x for x in facts if x)
     action = ''
-    if kind in LABELS:
+    if kind == 'DIGEST':
+        events = payload['events']
+        headline = f'本次采集有 {len(events)} 条变动'
+        preheader = headline
+        body = f'<p style="color:{MUTED};font-size:13px;line-height:22px">同一网站本次完整采集的变化已合并；降幅不足 10% 不提醒。</p>'
+        for category in LABELS:
+            group = [item for item in events if item['kind'] == category]
+            if not group: continue
+            body += f'<h2 style="font-size:16px;margin:24px 0 12px;color:{INK}">{e(label(category))} · {len(group)} 件</h2>'
+            body += '<div style="height:12px"></div>'.join(_product(item['kind'], item['payload']['product'], item['payload'].get('old_price')) for item in group)
+        action = _button(f'{admin}/#events', '查看变化历史', dark=False)
+    elif kind in LABELS:
         p = payload.get('product', {})
         headline = HEADLINES[kind]
         old, new = _dec(payload.get('old_price')), _dec(p.get('sale_price'))

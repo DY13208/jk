@@ -131,3 +131,36 @@ def test_admin_email_config_and_secrets_not_returned(tmp_path,monkeypatch):
         assert response.status_code==200 and response.json()['email_to']=='one@example.test'
         assert 'NEVER_RETURN_ME' not in response.text
         site['email_to']='';assert client.put('/api/sites/lecomte',json=site).status_code==422
+
+
+def test_email_digest_same_run_and_failure_states(mail_db):
+    mail_db.commit('lecomte', document([product(1), product(2), *[product(i) for i in range(3, 65)]]))
+    delivered = []
+    def sender(config, mail):
+        delivered.append(mail)
+        return {}
+    asyncio.run(Notifier(mail_db, email_sender=sender).dispatch())
+    assert len(delivered) == 2  # separate runs stay separate, even in the same dispatch
+    assert '62 条变动' in str(delivered[1]['Subject'])
+    for preference in ('plain', 'html'):
+        body = delivered[1].get_body(preferencelist=(preference,)).get_content()
+        assert all(f'商品 {i}' in body for i in range(3, 65))
+    assert all(row['status'] == 'sent' for row in mail_db.history('monitor_outbox', limit=100)['items'])
+
+
+@pytest.mark.parametrize('exc,state', [(TimeoutError(), 'uncertain'), (smtplib.SMTPDataError(451, b'retry'), 'pending')])
+def test_digest_failure_updates_all_members(mail_db, exc, state):
+    mail_db.commit('lecomte', document([product(i) for i in range(1, 5)]))
+    def sender(*args): raise exc
+    asyncio.run(Notifier(mail_db, email_sender=sender).dispatch())
+    assert {row['status'] for row in mail_db.history('monitor_outbox')['items']} == {state}
+
+
+def test_price_drop_threshold_keeps_history(mail_db):
+    mail_db.commit('lecomte', document([product(1, '9.01'), product(2, '9.00')]))
+    events = mail_db.history('monitor_events')['items']
+    drops = [event for event in events if event['kind'] == 'PRICE_DROP']
+    assert len(drops) == 2
+    queued = {row['event_id'] for row in mail_db.history('monitor_outbox')['items']}
+    assert next(event['id'] for event in drops if event['product_id'] == '1') not in queued
+    assert next(event['id'] for event in drops if event['product_id'] == '2') in queued

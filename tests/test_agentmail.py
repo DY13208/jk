@@ -253,3 +253,15 @@ def test_email_markup_is_client_safe(kind):
         assert 'image_256' in out and '本次完整采集 119 件' in out
     if kind=='PRICE_DROP': assert '-20.0%' in out and 'line-through' in out and '降价' in out
     if kind=='PRICE_RISE': assert '涨价' in out
+
+
+def test_agentmail_digest_finishes_all_members(queued):
+    queued.commit('lecomte', document([product(i) for i in range(1, 6)]))
+    first = agentmail.claim(queued)
+    agentmail.finish(queued, first['job'], {'returncode': 0, 'ok': True, 'queued': True})
+    batch = agentmail.claim(queued)
+    assert '3 条变动' in batch['subject']
+    assert all(f'商品 {i}' in batch['html'] for i in range(3, 6))
+    assert agentmail.claim(queued) is None
+    agentmail.finish(queued, batch['job'], {'returncode': 0, 'ok': True, 'queued': True})
+    assert {item['status'] for item in queued.history('monitor_outbox')['items']} == {'sent'}

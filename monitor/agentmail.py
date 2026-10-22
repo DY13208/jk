@@ -128,13 +128,18 @@ def claim(db):
             event['payload'] = json.loads(event['payload'])
             claimed = time.time()
             conn.execute("UPDATE monitor_outbox SET status='sending',claimed_at=?,attempts=attempts+1 WHERE id=?", (claimed, row['id']))
+            from .mail_digest import claim_digest
+            rows, event = claim_digest(conn, row, event, claimed)
+            batch_key = f"mail_batch:{row['id']}:{attempt_id(claimed)}"
+            conn.execute('INSERT OR REPLACE INTO monitor_meta(key,value) VALUES(?,?)', (batch_key, json.dumps([item['id'] for item in rows])))
             job=_job('outbox', row['id'], site, event, addresses, run_summary(conn, event.get('run_id')), attempt=attempt_id(claimed))
             from .notification_history import snapshot
             worker=conn.execute("SELECT value FROM monitor_meta WHERE key='agentmail_worker'").fetchone()
             worker=json.loads(worker[0]) if worker else {}
             sender=(worker.get('cli') or {}).get('account') or worker.get('account','')
             evidence=snapshot(site,job['text'],channel='agentmail',recipients=addresses,sender=sender,title=job['subject'],html=job['html'])
-            conn.execute('UPDATE monitor_outbox SET delivery_snapshot=? WHERE id=?',(json.dumps(evidence,ensure_ascii=False),row['id']))
+            for item in rows:
+                conn.execute('UPDATE monitor_outbox SET delivery_snapshot=? WHERE id=?',(json.dumps(evidence,ensure_ascii=False),item['id']))
             return job
         return None
 
@@ -177,8 +182,13 @@ def finish(db, job, result):
         if retry:
             if row['attempts'] < MAX_ATTEMPTS: next_at = time.time() + min(3600, 60 * 2 ** row['attempts'])
             else: state = 'held'
-        conn.execute('UPDATE monitor_outbox SET status=?,last_error=?,next_at=?,sent_at=? WHERE id=?',
-                     (state, reason, next_at, now_iso() if state == 'sent' else None, row_id))
+        batch_key = f"mail_batch:{row_id}:{attempt_id(row['claimed_at'])}"
+        batch = conn.execute('SELECT value FROM monitor_meta WHERE key=?', (batch_key,)).fetchone()
+        ids = json.loads(batch[0]) if batch else [row_id]
+        for item_id in ids:
+            conn.execute('UPDATE monitor_outbox SET status=?,last_error=?,next_at=?,sent_at=? WHERE id=? AND status="sending" AND claimed_at=?',
+                         (state, reason, next_at, now_iso() if state == 'sent' else None, item_id, row['claimed_at']))
+        conn.execute('DELETE FROM monitor_meta WHERE key=?', (batch_key,))
         return {'status': state}
 
 

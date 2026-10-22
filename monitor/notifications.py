@@ -104,27 +104,36 @@ class Notifier:
                     self.finish(row['id'], 'uncertain', '发送结果不确定，需人工核对后处理')
 
     async def deliver_email(self, row, site, event, content):
+        from .mail_digest import claim_digest
+        with self.db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            rows, event = claim_digest(conn, row, event)
+        content = message(site, event)
+        def finish(status, reason):
+            for item in rows: self.finish(item['id'], status, reason)
+        def retry(reason):
+            for item in rows: self.retry(item, reason)
         config = configuration(site, self.db)
         with self.db.connect() as conn: summary = run_summary(conn, event.get('run_id'))
         mail = build_email(site, event, content, config, summary)
-        record(self.db,row['id'],snapshot(site,content,channel='email',recipients=config['recipients'],sender=config['sender'],
+        for item in rows: record(self.db,item['id'],snapshot(site,content,channel='email',recipients=config['recipients'],sender=config['sender'],
                                         title=str(mail['Subject']),html=mail.get_body(preferencelist=('html',)).get_content()))
         try:
             refused = await asyncio.to_thread(self.email_sender, config, mail)
             if refused:
-                self.finish(row['id'], 'uncertain', '部分收件人被拒绝，其他收件人可能已收到；请核对后处理')
+                finish('uncertain', '部分收件人被拒绝，其他收件人可能已收到；请核对后处理')
             else:
-                self.finish(row['id'], 'sent', 'SMTP 服务器已接受邮件；最终收件状态请在邮箱中核对')
+                finish('sent', 'SMTP 服务器已接受邮件；最终收件状态请在邮箱中核对')
         except smtplib.SMTPRecipientsRefused as exc:
-            if all(400 <= code < 500 for code, _ in exc.recipients.values()): self.retry(row, 'SMTP 暂时拒绝所有收件人')
-            else: self.finish(row['id'], 'held', 'SMTP 拒绝收件邮箱，请核对设置')
+            if all(400 <= code < 500 for code, _ in exc.recipients.values()): retry('SMTP 暂时拒绝所有收件人')
+            else: finish('held', 'SMTP 拒绝收件邮箱，请核对设置')
         except smtplib.SMTPResponseException as exc:
-            if 400 <= exc.smtp_code < 500: self.retry(row, f'SMTP 暂时拒绝（{exc.smtp_code}）')
-            else: self.finish(row['id'], 'held', f'SMTP 明确拒绝（{exc.smtp_code}），请核对配置')
+            if 400 <= exc.smtp_code < 500: retry(f'SMTP 暂时拒绝（{exc.smtp_code}）')
+            else: finish('held', f'SMTP 明确拒绝（{exc.smtp_code}），请核对配置')
         except (ConnectionRefusedError, smtplib.SMTPNotSupportedError, ssl.SSLCertVerificationError):
-            self.finish(row['id'], 'held', 'SMTP 连接、加密或证书配置错误，请核对设置')
+            finish('held', 'SMTP 连接、加密或证书配置错误，请核对设置')
         except Exception:
-            self.finish(row['id'], 'uncertain', '邮件发送结果不确定，请核对收件箱后再重试')
+            finish('uncertain', '邮件发送结果不确定，请核对收件箱后再重试')
 
     async def deliver_pushplus(self, row, site, content):
         # Persistent, conservative global spacing also protects accounts shared by sites.
