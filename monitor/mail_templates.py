@@ -169,12 +169,15 @@ def render_html(site, event, summary=None):
     admin = admin_url()
     facts = [when and f'{when} 北京时间']
     if summary and summary.get('total') is not None: facts.append(f"本次完整采集 {summary['total']} 件")
-    if summary and summary.get('changes'): facts.append(f"共 {summary['changes']} 条变化")
+    if kind == 'DIGEST':
+        facts.append(f"本封邮件共 {len(payload['events'])} 条变化")
+    elif kind in LABELS:
+        facts.append('本封邮件共 1 条变化')
     meta_line = ' · '.join(x for x in facts if x)
     action = ''
     if kind == 'DIGEST':
         events = payload['events']
-        headline = f'本次采集有 {len(events)} 条变动'
+        headline = f'本封邮件有 {len(events)} 条变动'
         preheader = headline
         body = f'<p style="color:{MUTED};font-size:13px;line-height:22px">同一网站本次完整采集的变化已合并；降幅不足 10% 不提醒。</p>'
         for category in LABELS:

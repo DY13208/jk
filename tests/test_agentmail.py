@@ -251,8 +251,22 @@ def test_email_markup_is_client_safe(kind):
     assert 'role="presentation"' in out and '#notifications' in out and '管理通知设置' in out
     if kind in ('NEW','RETURNED','PRICE_DROP','PRICE_RISE','REMOVED'):
         assert 'image_256' in out and '本次完整采集 119 件' in out
+        assert '本封邮件共 1 条变化' in out
+    else:
+        assert '条变化' not in out
+    assert '共 3 条变化' not in out
     if kind=='PRICE_DROP': assert '-20.0%' in out and 'line-through' in out and '降价' in out
     if kind=='PRICE_RISE': assert '涨价' in out
+
+
+def test_digest_counts_only_events_in_this_email():
+    events = [{'id':i,'kind':'NEW','payload':{'product':product(i)}} for i in (7, 8)]
+    event = {'id':9,'kind':'DIGEST','payload':{'events':events}}
+    out = render_html({'name':'站点'}, event, {'total':109,'changes':5})
+    assert '本次完整采集 109 件' in out
+    assert '本封邮件共 2 条变化' in out
+    assert '本封邮件有 2 条变动' in out
+    assert '共 5 条变化' not in out
 
 
 def test_agentmail_digest_finishes_all_members(queued):
