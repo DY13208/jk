@@ -166,7 +166,12 @@ def create_app(db_path=None, scheduled=True):
                 return JSONResponse({'detail':'禁止跨站修改'},403)
             if request.headers.get('sec-fetch-site') == 'cross-site':
                 return JSONResponse({'detail':'禁止跨站修改'},403)
-        return await call_next(request)
+        response = await call_next(request)
+        # HTML (the admin shell) must always be revalidated so new ?v= asset URLs are picked up after a deploy;
+        # versioned JS/CSS keep the default heuristic caching.
+        if response.headers.get('content-type','').startswith('text/html'):
+            response.headers['Cache-Control'] = 'no-cache'
+        return response
 
     @app.get('/health')
     def health(): return {'ok':True,'crawler':'Crawl4AI 0.9.4'}
