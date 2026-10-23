@@ -20,7 +20,7 @@ def now(): return datetime.now(timezone.utc).isoformat()
 
 
 SITE_FIELDS = ('id','name','url','adapter','interval_minutes','enabled','permission_confirmed','policy_note',
-               'adapter_config','event_rules','notify_enabled','webhook_env','notification_channel','email_to')
+               'adapter_config','event_rules','notify_enabled','webhook_env','notification_channel','email_to','notification_channels')
 
 
 def import_sites(db, path, overwrite=False):
@@ -36,6 +36,10 @@ def import_sites(db, path, overwrite=False):
         row['interval_minutes'] = int(row['interval_minutes'] or 15)
         for k in ('policy_note','webhook_env','email_to'): row[k] = row[k] or ''
         row['notification_channel'] = row['notification_channel'] or 'wecom'
+        # The seed may use the multi-channel list, the legacy single fields, or both (list wins; first = primary).
+        from .multichannel import parse, mirror
+        entries = parse({**row, 'notification_channels': site.get('notification_channels') or []})
+        row.update(mirror(row, entries)); row['notification_channels'] = encode(entries)
         verb = 'INSERT OR REPLACE' if overwrite else 'INSERT OR IGNORE'
         cur = db.execute(f"{verb} INTO monitor_sites({','.join(SITE_FIELDS)},created_at) VALUES({','.join('?'*len(SITE_FIELDS))},?)",
                          [row[k] for k in SITE_FIELDS] + [now()])
@@ -97,7 +101,9 @@ class Database:
             with self.connect() as db:
                 migrated = db.execute("SELECT 1 FROM sqlite_master WHERE name='monitor_meta'").fetchone()
                 columns = {r['name'] for r in db.execute('PRAGMA table_info(monitor_sites)')}
-            if not migrated or 'notification_channel' not in columns: self.backup('before-migration')
+                outbox = {r['name'] for r in db.execute('PRAGMA table_info(monitor_outbox)')}
+            if (not migrated or 'notification_channel' not in columns or 'notification_channels' not in columns
+                    or (outbox and 'channel' not in outbox)): self.backup('before-migration')
         with self.connect() as db:
             db.executescript(diff_sqlite.SCHEMA)
             db.executescript('''
@@ -122,9 +128,10 @@ class Database:
                     product_id TEXT NOT NULL,kind TEXT NOT NULL,at TEXT NOT NULL,payload TEXT NOT NULL,
                     UNIQUE(site_id,run_id,product_id,kind));
                 CREATE TABLE IF NOT EXISTS monitor_outbox(
-                    id INTEGER PRIMARY KEY,event_id INTEGER UNIQUE REFERENCES monitor_events(id),
+                    id INTEGER PRIMARY KEY,event_id INTEGER REFERENCES monitor_events(id),
                     site_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,
-                    next_at REAL NOT NULL DEFAULT 0,claimed_at REAL,last_error TEXT NOT NULL DEFAULT '',sent_at TEXT);
+                    next_at REAL NOT NULL DEFAULT 0,claimed_at REAL,last_error TEXT NOT NULL DEFAULT '',sent_at TEXT,
+                    delivery_snapshot TEXT,channel TEXT NOT NULL DEFAULT '',UNIQUE(event_id,channel));
                 CREATE TABLE IF NOT EXISTS monitor_logs(
                     id INTEGER PRIMARY KEY,site_id TEXT,started TEXT NOT NULL,ended TEXT,status TEXT NOT NULL,
                     message TEXT NOT NULL DEFAULT '',run_id INTEGER REFERENCES runs(run_id));
@@ -145,9 +152,38 @@ class Database:
             columns = {r['name'] for r in db.execute('PRAGMA table_info(monitor_sites)')}
             for column, definition in [('notification_channel', "TEXT NOT NULL DEFAULT 'wecom'"), ('email_to', "TEXT NOT NULL DEFAULT ''")]:
                 if column not in columns: db.execute(f'ALTER TABLE monitor_sites ADD COLUMN {column} {definition}')
+            if 'notification_channels' not in columns:
+                db.execute("ALTER TABLE monitor_sites ADD COLUMN notification_channels TEXT NOT NULL DEFAULT ''")
             outbox_columns = {r['name'] for r in db.execute('PRAGMA table_info(monitor_outbox)')}
             if 'delivery_snapshot' not in outbox_columns:
                 db.execute('ALTER TABLE monitor_outbox ADD COLUMN delivery_snapshot TEXT')
+            if 'channel' not in outbox_columns:
+                # One row per event *per channel*: rebuild to replace UNIQUE(event_id) with UNIQUE(event_id,channel).
+                # Existing rows get the channel they were (or would have been) sent through.
+                db.execute('''CREATE TABLE monitor_outbox_multi(
+                        id INTEGER PRIMARY KEY,event_id INTEGER REFERENCES monitor_events(id),
+                        site_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,
+                        next_at REAL NOT NULL DEFAULT 0,claimed_at REAL,last_error TEXT NOT NULL DEFAULT '',sent_at TEXT,
+                        delivery_snapshot TEXT,channel TEXT NOT NULL DEFAULT '',UNIQUE(event_id,channel))''')
+                db.execute('''INSERT INTO monitor_outbox_multi(id,event_id,site_id,status,attempts,next_at,claimed_at,last_error,sent_at,delivery_snapshot,channel)
+                        SELECT o.id,o.event_id,o.site_id,o.status,o.attempts,o.next_at,o.claimed_at,o.last_error,o.sent_at,o.delivery_snapshot,
+                        COALESCE(json_extract(o.delivery_snapshot,'$.channel'),
+                            CASE WHEN o.last_error LIKE 'Agent Mail%' THEN 'agentmail' WHEN o.last_error LIKE 'SMTP%' THEN 'email'
+                            WHEN o.last_error LIKE '企业微信%' THEN 'wecom' WHEN o.last_error LIKE 'pushplus%' THEN 'pushplus'
+                            WHEN o.last_error LIKE '腾讯微信%' OR o.last_error LIKE '微信%' THEN 'weixin' END,
+                            s.notification_channel,'wecom')
+                        FROM monitor_outbox o LEFT JOIN monitor_sites s ON s.id=o.site_id''')
+                db.execute('DROP TABLE monitor_outbox')
+                db.execute('ALTER TABLE monitor_outbox_multi RENAME TO monitor_outbox')
+            db.execute('CREATE INDEX IF NOT EXISTS monitor_outbox_due ON monitor_outbox(status,channel,next_at)')
+            # Rows inserted without a channel (older code paths/scripts) belong to the site's primary channel.
+            db.execute('''CREATE TRIGGER IF NOT EXISTS monitor_outbox_default_channel AFTER INSERT ON monitor_outbox
+                WHEN NEW.channel='' BEGIN UPDATE monitor_outbox SET channel=COALESCE((SELECT NULLIF(notification_channel,'')
+                FROM monitor_sites WHERE id=NEW.site_id),'wecom') WHERE id=NEW.id; END''')
+            # Each site's single channel becomes a one-item list (legacy fields stay as the primary/fallback).
+            from .multichannel import parse
+            for row in db.execute("SELECT * FROM monitor_sites WHERE notification_channels=''").fetchall():
+                db.execute('UPDATE monitor_sites SET notification_channels=? WHERE id=?', (encode(parse(dict(row))), row['id']))
             # Policy-excluded alerts are history, not deliveries awaiting repair.
             db.execute("""UPDATE monitor_outbox SET status='suppressed',
                 last_error='访问异常按现行规则不推送；原记录：' || last_error
@@ -230,6 +266,21 @@ class Database:
             site['email_configured'] = False
         # Agent Mail readiness also depends on the host worker; the admin UI combines both.
         site['agentmail_configured'] = bool(site['email_to'])
+        from .multichannel import parse, effective
+        site['notification_channels'] = parse(site)
+        # Per selected channel: is its env name / recipient usable? (weixin/agentmail also need their workers.)
+        status = {}
+        for e in site['notification_channels']:
+            view = effective(site, e); c = e['channel']
+            try:
+                if c == 'wecom': status[c] = bool(e['env'] and os.getenv(e['env']))
+                elif c == 'pushplus': token(view); status[c] = True
+                elif c in ('bark', 'ntfy'): push.config(view); status[c] = True
+                elif c == 'email': configuration(view, self); status[c] = True
+                elif c == 'agentmail': status[c] = bool(e['to'])
+                else: status[c] = True
+            except ValueError: status[c] = False
+        site['channel_status'] = status
         return site
 
     def sites(self):
@@ -240,6 +291,13 @@ class Database:
         return next((s for s in self.sites() if s['id'] == site_id), None)
 
     def save_site(self, site):
+        from .multichannel import reconcile, mirror
+        with self.connect() as db:
+            stored = db.execute('SELECT * FROM monitor_sites WHERE id=?', (site['id'],)).fetchone()
+        entries = reconcile(site, dict(stored) if stored else None)
+        # Update the caller's dict too, so a site dict reused for a later save is not stale.
+        site.update(mirror(site, entries)); site['notification_channels'] = entries
+        site = dict(site)
         with self.connect() as db:
             # URL/adapter changes must use a new site ID so unrelated catalogues cannot share a baseline.
             old = db.execute('SELECT url,adapter,adapter_config FROM monitor_sites WHERE id=?', (site['id'],)).fetchone()
@@ -249,17 +307,18 @@ class Database:
                 != {k:v for k,v in site['adapter_config'].items() if k not in ('persistent_session','page_delay','pagination_mode','load_more_selector','execution_mode')}):
                 raise ValueError('已有历史的网站更改 URL 或适配器时，请使用新的网站 ID 建立独立基线')
             db.execute('''INSERT INTO monitor_sites(id,name,url,adapter,interval_minutes,enabled,permission_confirmed,
-                policy_note,adapter_config,event_rules,notify_enabled,webhook_env,created_at,notification_channel,email_to)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,url=excluded.url,
+                policy_note,adapter_config,event_rules,notify_enabled,webhook_env,created_at,notification_channel,email_to,notification_channels)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,url=excluded.url,
                 adapter=excluded.adapter,interval_minutes=excluded.interval_minutes,enabled=excluded.enabled,
                 permission_confirmed=excluded.permission_confirmed,policy_note=excluded.policy_note,
                 adapter_config=excluded.adapter_config,event_rules=excluded.event_rules,notify_enabled=excluded.notify_enabled,
                 webhook_env=excluded.webhook_env,notification_channel=excluded.notification_channel,email_to=excluded.email_to,
+                notification_channels=excluded.notification_channels,
                 paused_reason=CASE WHEN excluded.enabled=1 THEN '' ELSE monitor_sites.paused_reason END ''',
                 (site['id'],site['name'],site['url'],site['adapter'],site['interval_minutes'],int(site['enabled']),
                  int(site['permission_confirmed']),site['policy_note'],encode(site['adapter_config']),
                  encode(site['event_rules']),int(site['notify_enabled']),site['webhook_env'],now(),
-                 site.get('notification_channel','wecom'),site.get('email_to','')))
+                 site.get('notification_channel','wecom'),site.get('email_to',''),encode(entries)))
 
     def latest_id(self, db, site_id):
         row = db.execute('SELECT MAX(run_id) FROM monitor_run_meta WHERE site_id=? AND complete=1', (site_id,)).fetchone()
@@ -304,7 +363,9 @@ class Database:
                 if (site['notify_enabled'] and kind in site['event_rules']
                     and not (kind == 'PRICE_DROP' and Decimal(str(old_price)) > 0
                              and (Decimal(str(old_price)) - Decimal(str(product['sale_price']))) < Decimal(str(old_price)) * Decimal('0.10'))):
-                    db.execute('INSERT INTO monitor_outbox(event_id,site_id) VALUES(?,?)', (cur.lastrowid,site_id))
+                    # One independent delivery per selected channel; UNIQUE(event_id,channel) dedupes.
+                    db.executemany('INSERT OR IGNORE INTO monitor_outbox(event_id,site_id,channel) VALUES(?,?,?)',
+                                   [(cur.lastrowid,site_id,e['channel']) for e in site['notification_channels']])
             return rid, emitted
 
     def acquire(self, site_id, owner, seconds=360):

@@ -13,6 +13,7 @@ import secrets
 import time
 from datetime import datetime, timezone
 
+from .multichannel import entry, effective
 from .email_delivery import recipients
 from .database import run_summary
 from .mail_templates import message, render_html, subject
@@ -45,8 +46,8 @@ def valid_token(db, supplied):
 def status(db):
     with db.connect() as conn:
         row = conn.execute("SELECT value FROM monitor_meta WHERE key='agentmail_worker'").fetchone()
-        pending = conn.execute("""SELECT COUNT(*) FROM monitor_outbox o JOIN monitor_sites s ON s.id=o.site_id
-            WHERE s.notification_channel='agentmail' AND o.status IN ('pending','sending')""").fetchone()[0]
+        pending = conn.execute("""SELECT COUNT(*) FROM monitor_outbox o
+            WHERE o.channel='agentmail' AND o.status IN ('pending','sending')""").fetchone()[0]
         tests = [dict(r) for r in conn.execute('SELECT * FROM monitor_mail_tests ORDER BY id DESC LIMIT 10')]
     state = json.loads(row[0]) if row else {}
     heartbeat = state.get('heartbeat', 0)
@@ -77,7 +78,8 @@ def heartbeat(db, report):
 def request_test(db, site_id, to=None):
     site = db.site(site_id)
     if not site: raise LookupError('网站不存在')
-    addresses = recipients(to if to else site.get('email_to', ''))
+    selected = entry(site, 'agentmail')
+    addresses = recipients(to if to else (selected['to'] if selected and selected['to'] else site.get('email_to', '')))
     with db.connect() as conn:
         busy = conn.execute("SELECT 1 FROM monitor_mail_tests WHERE status IN ('pending','sending') LIMIT 1").fetchone()
         if busy: raise ValueError('已有测试邮件在队列中，请等待处理后再试')
@@ -103,7 +105,7 @@ def claim(db):
         conn.execute('BEGIN IMMEDIATE')
         cutoff = time.time() - STALE_SECONDS
         conn.execute("UPDATE monitor_outbox SET status='uncertain',last_error='发送进程中断，需人工核对' WHERE status='sending' AND claimed_at<? "
-                     "AND site_id IN (SELECT id FROM monitor_sites WHERE notification_channel='agentmail')", (cutoff,))
+                     "AND channel='agentmail'", (cutoff,))
         conn.execute("UPDATE monitor_mail_tests SET status='uncertain',last_error='发送进程中断，请查看收件箱' WHERE status='sending' AND claimed_at<?", (cutoff,))
         test = conn.execute("SELECT * FROM monitor_mail_tests WHERE status='pending' ORDER BY id LIMIT 1").fetchone()
         if test:
@@ -112,11 +114,15 @@ def claim(db):
             event = {'id': f"T{test['id']}", 'kind': 'TEST', 'at': test['created'], 'payload': {}}
             return _job('test', test['id'], dict(site), event, recipients(test['recipients']))
         for _ in range(50):
-            row = conn.execute("""SELECT o.* FROM monitor_outbox o JOIN monitor_sites s ON s.id=o.site_id
-                WHERE o.status='pending' AND o.next_at<=? AND s.notification_channel='agentmail' ORDER BY o.id LIMIT 1""",
+            row = conn.execute("""SELECT o.* FROM monitor_outbox o
+                WHERE o.status='pending' AND o.next_at<=? AND o.channel='agentmail' ORDER BY o.id LIMIT 1""",
                 (time.time(),)).fetchone()
             if not row: return None
-            site = dict(conn.execute('SELECT * FROM monitor_sites WHERE id=?', (row['site_id'],)).fetchone())
+            site = conn.execute('SELECT * FROM monitor_sites WHERE id=?', (row['site_id'],)).fetchone()
+            selected = entry(dict(site), 'agentmail') if site else None
+            if not selected:
+                conn.execute("UPDATE monitor_outbox SET status='held',last_error='站点已不再选用该通知方式，未发送' WHERE id=?", (row['id'],)); continue
+            site = effective(dict(site), selected)
             if not site['notify_enabled']:
                 conn.execute("UPDATE monitor_outbox SET status='held',last_error='通知已关闭' WHERE id=?", (row['id'],)); continue
             try: addresses = recipients(site['email_to'])

@@ -39,7 +39,7 @@ def logged_channel(reason):
 
 
 CHANNEL_EXPR="""COALESCE(json_extract(o.delivery_snapshot,'$.channel'),
-    CASE WHEN o.status='pending' AND o.attempts=0 THEN s.notification_channel
+    CASE WHEN o.status='pending' AND o.attempts=0 THEN o.channel
     WHEN o.last_error LIKE 'Agent Mail%' THEN 'agentmail'
     WHEN o.last_error LIKE 'SMTP%' THEN 'email'
     WHEN o.last_error LIKE '企业微信%' THEN 'wecom'
@@ -52,7 +52,12 @@ def _row(row):
     row=dict(row)
     captured=json.loads(row.pop('delivery_snapshot')) if row.get('delivery_snapshot') else None
     event=json.loads(row.pop('event_payload'))
-    current=planned({'notification_channel':row.pop('current_channel') or 'wecom','email_to':row.pop('current_to') or '', 'webhook_env':row.pop('current_variable') or ''})
+    stored={'notification_channel':row.pop('current_channel') or 'wecom','email_to':row.pop('current_to') or '',
+            'webhook_env':row.pop('current_variable') or '','notification_channels':row.pop('current_channels') or ''}
+    # The row's own channel decides what "current configuration" means (a site may use several channels).
+    from .multichannel import entry, effective
+    selected=entry(stored,row.get('channel') or '')
+    current=planned(effective(stored,selected) if selected else stored)
     # A current site setting is not proof of any historical delivery.
     basis='captured' if captured else 'planned' if row['status']=='pending' and row['attempts']==0 else 'legacy'
     evidence=captured or current if basis!='legacy' else None
@@ -67,7 +72,8 @@ def _row(row):
 BASE=''' FROM monitor_outbox o JOIN monitor_events e ON e.id=o.event_id
     LEFT JOIN monitor_sites s ON s.id=o.site_id'''
 SELECT='''SELECT o.*, e.at AS event_at,e.run_id,e.kind,e.payload AS event_payload,s.name AS site_name,
-    s.notification_channel AS current_channel,s.email_to AS current_to,s.webhook_env AS current_variable'''
+    s.notification_channel AS current_channel,s.email_to AS current_to,s.webhook_env AS current_variable,
+    s.notification_channels AS current_channels'''
 
 
 def diagnostics(db):

@@ -72,14 +72,29 @@ def site_issue(db, site, weixin=None, agent=None):
     return None
 
 
+def site_issues(db, site, weixin=None, agent=None):
+    """[(channel, issue)] for every selected channel of the site that cannot deliver right now."""
+    from .multichannel import parse, effective
+    result = []
+    for entry in parse(site):
+        if entry['channel'] == 'agentmail' and agent is None:
+            from . import agentmail
+            agent = agentmail.status(db)
+        issue = site_issue(db, effective(site, entry), weixin, agent)
+        if issue: result.append((entry['channel'], issue))
+    return result
+
+
 def env_names(db, channel, destinations=True):
     """Variable names for a channel: its documented ones plus those referenced by sites using it.
     destinations=True drops server/option variables (the names a site or a test may point at)."""
     spec = next(c for c in CHANNELS if c['id'] == channel)
     names = [e[0] for e in spec['env'] if not (destinations and e[0] in OPTIONS)]
+    from .multichannel import parse
     for site in db.sites():
-        if site.get('notification_channel') == channel and ENV_NAME.match(site.get('webhook_env') or '') and site['webhook_env'] not in names:
-            names.append(site['webhook_env'])
+        for entry in parse(site):
+            if entry['channel'] == channel and ENV_NAME.match(entry['env']) and entry['env'] not in names:
+                names.append(entry['env'])
     return names
 
 
@@ -101,9 +116,12 @@ def overview(db, weixin=None, agent=None):
         elif cid in ('bark', 'ntfy', 'wecom', 'pushplus'): configured = any(e['set'] for e in targets)
         elif cid == 'weixin': configured = bool((weixin or {}).get('ready'))
         else: configured = bool((agent or {}).get('ready'))
+        from .multichannel import entry, effective
         users = [{'id': s['id'], 'name': s['name'], 'notify_enabled': s['notify_enabled'],
-                  'issue': site_issue(db, s, weixin, agent) if s['notify_enabled'] else None}
-                 for s in sites if (s.get('notification_channel') or 'wecom') == cid]
+                  'env': entry(s, cid)['env'], 'to': entry(s, cid)['to'],
+                  'channels': [e['channel'] for e in s['notification_channels']],
+                  'issue': site_issue(db, effective(s, entry(s, cid)), weixin, agent) if s['notify_enabled'] else None}
+                 for s in sites if entry(s, cid)]
         result.append({**{k: spec[k] for k in ('id', 'name', 'platform', 'doc', 'note')}, 'env': env, 'configured': configured,
                        'gmail': gmail if cid == 'email' else None, 'apps': APPS.get(cid, []), 'sites': users,
                        'test': {'needs_to': cid in ('email', 'agentmail'), 'env_choices': [e['name'] for e in targets if e['set']]

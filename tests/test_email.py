@@ -112,6 +112,7 @@ def test_additive_v1_migration_keeps_data_and_notification_settings(tmp_path):
     db.commit('lecomte',document([product(1)]))
     with db.connect() as conn:
         conn.execute("UPDATE monitor_sites SET webhook_env='WECOM_OLD',notify_enabled=0")
+        conn.execute('DROP TRIGGER IF EXISTS monitor_outbox_default_channel')  # v1 had no multi-channel trigger
         conn.execute('ALTER TABLE monitor_sites DROP COLUMN notification_channel')
         conn.execute('ALTER TABLE monitor_sites DROP COLUMN email_to')
     db.migrate();db.migrate()

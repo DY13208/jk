@@ -17,6 +17,7 @@ from . import push
 from . import weixin
 from . import product_images
 from .notification_history import snapshot, record
+from .multichannel import entry, effective
 
 
 def webhook(site):
@@ -47,9 +48,9 @@ class Notifier:
                 with self.db.connect() as db:
                     db.execute('BEGIN IMMEDIATE')
                     # A crash after transmission cannot prove whether the endpoint accepted it.
-                    db.execute("UPDATE monitor_outbox SET status='uncertain',last_error='发送进程中断，需人工核对' WHERE status='sending' AND claimed_at<? AND site_id IN (SELECT id FROM monitor_sites WHERE notification_channel!='agentmail')", (time.time()-120,))
+                    db.execute("UPDATE monitor_outbox SET status='uncertain',last_error='发送进程中断，需人工核对' WHERE status='sending' AND claimed_at<? AND channel!='agentmail'", (time.time()-120,))
                     # Agent Mail uses the host OS keychain and is dispatched by its host worker.
-                    row = db.execute("SELECT o.* FROM monitor_outbox o JOIN monitor_sites s ON s.id=o.site_id WHERE o.status='pending' AND o.next_at<=? AND s.notification_channel!='agentmail' ORDER BY o.id LIMIT 1", (time.time(),)).fetchone()
+                    row = db.execute("SELECT o.* FROM monitor_outbox o WHERE o.status='pending' AND o.next_at<=? AND o.channel!='agentmail' ORDER BY o.id LIMIT 1", (time.time(),)).fetchone()
                     if not row: return
                     row = dict(row)
                     db.execute("UPDATE monitor_outbox SET status='sending',claimed_at=?,attempts=attempts+1 WHERE id=?", (time.time(),row['id']))
@@ -58,6 +59,11 @@ class Notifier:
                 site = self.db.site(row['site_id'])
                 if event['kind'] == 'ACCESS_DENIED':
                     self.finish(row['id'], 'suppressed', '访问异常仅在后台记录，不推送'); continue
+                # Each row belongs to one channel; the handler sees only that channel's env name / recipients.
+                selected = entry(site, row['channel']) if site else None
+                if not selected:
+                    self.finish(row['id'], 'held', '站点已不再选用该通知方式，未发送'); continue
+                site = effective(site, selected)
                 try:
                     if not site['notify_enabled']: raise ValueError('通知已关闭')
                     if site.get('notification_channel') == 'email':
@@ -138,7 +144,7 @@ class Notifier:
     async def deliver_pushplus(self, row, site, content):
         # Persistent, conservative global spacing also protects accounts shared by sites.
         with self.db.connect() as conn:
-            last = conn.execute("SELECT MAX(o.claimed_at) FROM monitor_outbox o JOIN monitor_sites s ON s.id=o.site_id WHERE s.notification_channel='pushplus' AND o.id!=? AND o.status IN ('sent','uncertain')", (row['id'],)).fetchone()[0]
+            last = conn.execute("SELECT MAX(o.claimed_at) FROM monitor_outbox o WHERE o.channel='pushplus' AND o.id!=? AND o.status IN ('sent','uncertain')", (row['id'],)).fetchone()[0]
             if last and time.time() - last < 15:
                 conn.execute("UPDATE monitor_outbox SET status='pending',next_at=?,attempts=attempts-1 WHERE id=?", (last+15,row['id']))
                 return
@@ -167,12 +173,12 @@ class Notifier:
         with self.db.connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
             # Gentle global spacing per provider (ntfy.sh/Bark public servers rate-limit bursts).
-            last = conn.execute("SELECT MAX(o.claimed_at) FROM monitor_outbox o JOIN monitor_sites s ON s.id=o.site_id WHERE s.notification_channel=? AND o.id!=? AND o.status IN ('sent','uncertain')", (channel,row['id'])).fetchone()[0]
+            last = conn.execute("SELECT MAX(o.claimed_at) FROM monitor_outbox o WHERE o.channel=? AND o.id!=? AND o.status IN ('sent','uncertain')", (channel,row['id'])).fetchone()[0]
             if last and time.time() - last < 5:
                 conn.execute("UPDATE monitor_outbox SET status='pending',next_at=?,attempts=attempts-1 WHERE id=?", (last+5,row['id']))
                 return
             # Batch the site's other due events into the same push (one notification per crawl, not per product).
-            others = [dict(r) for r in conn.execute("SELECT o.* FROM monitor_outbox o JOIN monitor_events e ON e.id=o.event_id WHERE o.site_id=? AND o.status='pending' AND o.next_at<=? AND o.id!=? AND e.kind!='ACCESS_DENIED' ORDER BY o.id LIMIT 49", (row['site_id'],time.time(),row['id']))]
+            others = [dict(r) for r in conn.execute("SELECT o.* FROM monitor_outbox o JOIN monitor_events e ON e.id=o.event_id WHERE o.site_id=? AND o.channel=? AND o.status='pending' AND o.next_at<=? AND o.id!=? AND e.kind!='ACCESS_DENIED' ORDER BY o.id LIMIT 49", (row['site_id'],channel,time.time(),row['id']))]
             events = [event]
             for other in others:
                 conn.execute("UPDATE monitor_outbox SET status='sending',claimed_at=?,attempts=attempts+1 WHERE id=?", (time.time(),other['id']))
@@ -207,7 +213,7 @@ class Notifier:
         image_url=((event or {}).get('payload') or {}).get('product',{}).get('image')
         image=await product_images.attachment(image_url)
         try:
-            site=self.db.site(row['site_id'])
+            site=effective(self.db.site(row['site_id']),{'channel':'weixin','env':'','to':''})
             evidence=snapshot(site,content,channel='weixin',recipients=[state['recipient']] if state.get('recipient') else [])
             record(self.db,row['id'],evidence)
             result=await weixin.request(self.db,'send',{'text':content,**({'image':image} if image else {})})

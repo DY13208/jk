@@ -89,8 +89,8 @@ def test_dispatch_errors(queued, code, expected):
 
 def test_ui_has_channels_and_preserves_unknown_values():
     js = Path('admin/app.js').read_text(encoding='utf-8'); html = Path('admin/index.html').read_text(encoding='utf-8')
-    assert 'value="bark"' in html and 'value="ntfy"' in html
-    assert "['notification_channel',s.notification_channel]" in js and 'sel.add(new Option(v,v))' in js
+    assert "['bark','Bark" in js and "['ntfy','ntfy" in js and 'id="channel-list"' in html   # multi-select checkboxes
+    assert 'data-chpick' in js and 'collectChannels()' in js and 'sel.add(new Option(v,v))' in js
     assert 'data-pushtest' in js and '随机' in js
 
 

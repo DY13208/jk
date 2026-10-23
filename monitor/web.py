@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi import FastAPI, HTTPException, Request, Query, Body
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
@@ -24,6 +24,12 @@ from .mail_templates import render_html, LABELS
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class ChannelInput(BaseModel):
+    channel: str = Field(pattern=r'^(wecom|email|agentmail|pushplus|weixin|bark|ntfy)$')
+    env: str = Field(default='',pattern=r'^$|^[A-Z][A-Z0-9_]{0,79}$')
+    to: str = Field(default='',max_length=2000)
+
+
 class SiteInput(BaseModel):
     id: str = Field(pattern=r'^[a-z][a-z0-9_-]{0,47}$')
     name: str = Field(min_length=1,max_length=100)
@@ -39,16 +45,24 @@ class SiteInput(BaseModel):
     webhook_env: str = Field(default='',pattern=r'^$|^[A-Z][A-Z0-9_]{0,79}$')
     notification_channel: str = Field(default='wecom',pattern=r'^(wecom|email|agentmail|pushplus|weixin|bark|ntfy)$')
     email_to: str = Field(default='',max_length=2000)
+    # Additive: several channels per site. Absent/empty = the legacy single fields above (old clients).
+    notification_channels: list[ChannelInput] = Field(default_factory=list,max_length=7)
 
     @model_validator(mode='after')
     def valid(self):
+        from .multichannel import reconcile, mirror
+        entries = reconcile(self.model_dump())
+        for e in entries:
+            if e['to']: recipients(e['to'])
+            if self.notify_enabled and e['channel'] in ('email','agentmail') and not e['to']:
+                raise ValueError('启用邮件推送前请填写收件邮箱')
+            if self.notify_enabled and e['channel'] in ('bark','ntfy') and not e['env']:
+                raise ValueError('启用 Bark/ntfy 推送前请填写保存 Key/主题 的环境变量名（如 BARK_KEY、NTFY_TOPIC）')
+            if self.notify_enabled and e['channel'] == 'pushplus' and not e['env']:
+                raise ValueError('启用个人微信推送前请填写 pushplus Token 环境变量名')
         if self.email_to: recipients(self.email_to)
-        if self.notify_enabled and self.notification_channel in ('email','agentmail') and not self.email_to:
-            raise ValueError('启用邮件推送前请填写收件邮箱')
-        if self.notify_enabled and self.notification_channel in ('bark','ntfy') and not self.webhook_env:
-            raise ValueError('启用 Bark/ntfy 推送前请填写保存 Key/主题 的环境变量名（如 BARK_KEY、NTFY_TOPIC）')
-        if self.notify_enabled and self.notification_channel == 'pushplus' and not self.webhook_env:
-            raise ValueError('启用个人微信推送前请填写 pushplus Token 环境变量名')
+        for key, value in mirror(self.model_dump(), entries).items(): setattr(self, key, value)
+        self.notification_channels = [ChannelInput(**e) for e in entries]
         parsed = urlsplit(self.url)
         if self.url and (parsed.scheme not in ('https','http') or not parsed.hostname or parsed.username or parsed.password):
             raise ValueError('URL 必须是无用户名密码的 HTTP/HTTPS 地址')
@@ -171,7 +185,7 @@ def create_app(db_path=None, scheduled=True):
 
     async def weixin_for_health():
         # Only ask the bridge when a site actually notifies through it (status() never raises).
-        if any(s['notify_enabled'] and s['enabled'] and s.get('notification_channel')=='weixin' for s in db.sites()):
+        if any(s['notify_enabled'] and s['enabled'] and any(e['channel']=='weixin' for e in s['notification_channels']) for s in db.sites()):
             return await weixin.status(db)
         return None
 
@@ -251,7 +265,16 @@ def create_app(db_path=None, scheduled=True):
         return {'items':items,'adapters':list(REGISTRY)}
 
     @app.put('/api/sites/{site_id}')
-    def save(site_id: str, payload: SiteInput, request: Request):
+    def save(site_id: str, request: Request, body: dict = Body(...)):
+        from .multichannel import reconcile
+        from fastapi.exceptions import RequestValidationError
+        from pydantic import ValidationError
+        stored = db.site(site_id)
+        if body.get('notification_channels') and stored:
+            # Old clients may edit only the single legacy fields while echoing back the stored list.
+            body = {**body, 'notification_channels': reconcile(body, stored)}
+        try: payload = SiteInput(**body)
+        except ValidationError as exc: raise RequestValidationError(exc.errors()) from exc
         if site_id != payload.id: raise HTTPException(400,'网站 ID 不一致')
         try: db.save_site(payload.model_dump())
         except ValueError as exc: raise HTTPException(409,str(exc)) from exc
@@ -397,11 +420,16 @@ def create_app(db_path=None, scheduled=True):
 
     @app.post('/api/sites/{site_id}/push-test')
     async def push_test(site_id: str, payload: dict, request: Request):
-        # Explicit admin click only: sends one test notification through the site's Bark/ntfy settings.
+        # Explicit admin click only: one test through one of the site's selected Bark/ntfy channels
+        # (payload.channel picks which; default = the first selected Bark/ntfy).
+        from .multichannel import effective
         if not payload.get('confirm'): raise HTTPException(400,'请确认后再发送测试推送')
         site = db.site(site_id)
         if not site: raise HTTPException(404,'站点不存在')
-        if site['notification_channel'] not in push.CHANNELS: raise HTTPException(409,'该站点未选择 Bark 或 ntfy')
+        wanted = str(payload.get('channel') or '')
+        choice = next((e for e in site['notification_channels'] if e['channel'] in push.CHANNELS and (not wanted or e['channel']==wanted)), None)
+        if not choice: raise HTTPException(409,'该站点未选择 Bark 或 ntfy')
+        site = effective(site, choice)
         try: url, headers, extra = push.config(site)
         except ValueError as exc: raise HTTPException(409,str(exc)) from exc
         note = push.build(site,[{'id':0,'kind':'TEST','payload':{}}])

@@ -7,7 +7,7 @@ from . import host_collector
 
 def business_health(db, service, weixin=None):
     """weixin: bridge status dict from the async caller (None = bridge not checked)."""
-    from .channels import site_issue, NAMES
+    from .channels import site_issues, NAMES
     from . import agentmail
     clock = time.time()
     agent = None
@@ -35,10 +35,11 @@ def business_health(db, service, weixin=None):
                 elif age > max(site['interval_minutes'] * 120, 1800): reasons.append('采集数据已过期')
                 if latest and latest['status'] in ('FAILED', 'INTERRUPTED'): reasons.append('最近采集未成功')
                 if site['notify_enabled']:
-                    channel = site.get('notification_channel') or 'wecom'
-                    if channel == 'agentmail' and agent is None: agent = agentmail.status(db)
-                    issue = site_issue(db, site, weixin, agent)
-                    if issue: reasons.append(f"通知未配置（{NAMES.get(channel, channel)}）：{issue}")
+                    # Every selected channel is checked; one unconfigured channel is reported by name.
+                    if agent is None and any(e['channel'] == 'agentmail' for e in site['notification_channels']):
+                        agent = agentmail.status(db)
+                    for channel, issue in site_issues(db, site, weixin, agent):
+                        reasons.append(f"通知未配置（{NAMES.get(channel, channel)}）：{issue}")
             elif site.get('paused_reason'):
                 reasons.append(site['paused_reason'])
             if progress:
