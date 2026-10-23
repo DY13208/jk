@@ -26,7 +26,7 @@ def test_bark_payload_single_and_level(monkeypatch):
     assert url == 'https://api.day.app/push' and headers is None
     body = push.payload('bark', push.build(SITE, [ev('PRICE_DROP', old='20.00')]), extra)
     assert body['device_key'] == KEY and body['group'] == '商品监控' and body['level'] == 'timeSensitive'
-    assert body['url'] == 'https://example.test/p-1' and 'Item 1' in body['body']
+    assert body['url'] == 'https://example.test/p-1' and body['title'] == '降价 -50% · Item 1'
     assert push.payload('bark', push.build(SITE, [ev('NEW')]), extra)['level'] == 'active'
 
 
@@ -36,7 +36,7 @@ def test_ntfy_payload_batch_truncates(monkeypatch):
     url, headers, extra = push.config(site)
     assert url == 'https://ntfy.sh' and headers == {'Authorization': 'Bearer tk_test'}
     body = push.payload('ntfy', push.build(site, [ev('NEW', i) for i in range(12)]), extra)
-    assert body['topic'] == TOPIC and '12 项' in body['title'] and '另有 4 项' in body['message']
+    assert body['topic'] == TOPIC and body['title'] == '12 个变化 · Shop' and '另有 4 项' in body['message']
     assert 'click' not in body and body['priority'] == 3
 
 

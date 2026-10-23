@@ -13,8 +13,9 @@ from .mail_templates import LABELS, message
 CHANNELS = ('bark', 'ntfy')
 GROUP = '商品监控'
 MAX_LINES = 8
+# ntfy emoji shortcodes (shown as an emoji before the title); Bark ignores tags.
 TAGS = {'NEW': 'new', 'REMOVED': 'x', 'RETURNED': 'recycle', 'PRICE_DROP': 'chart_with_downwards_trend',
-        'PRICE_RISE': 'chart_with_upwards_trend', 'TEST': 'white_check_mark'}
+        'PRICE_RISE': 'chart_with_upwards_trend', 'TEST': 'white_check_mark', 'ACCESS_DENIED': 'warning'}
 
 
 def _server(name, default, allow_http_env):
@@ -48,12 +49,89 @@ def config(site):
     raise ValueError('不是 Bark/ntfy 通道')
 
 
+TITLE_MAX = 28
+KIND_SHORT = {'NEW': '上新', 'REMOVED': '下架', 'RETURNED': '补货', 'PRICE_DROP': '降价', 'PRICE_RISE': '涨价'}
+# Brand prefixes that are redundant on a single-brand shop feed (case-insensitive, any apostrophe style).
+BRANDS = (r"arc['\u2019\u2018`]?\s?teryx", '始祖鸟')
+_BRAND_RE = re.compile(r'^\s*(?:' + '|'.join(BRANDS) + r')(?:\s*[-–—:·|/]\s*|\s+|(?<=[\u4e00-\u9fff])|(?=[\u4e00-\u9fff]))', re.I)
+
+
+def clamp(text, limit=TITLE_MAX):
+    text = ' '.join(str(text or '').split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip(' ·-') + '…'
+
+
+def short_name(name):
+    """Product name without a leading redundant brand; falls back to the full name if nothing would remain."""
+    full = ' '.join(str(name or '').split())
+    short = _BRAND_RE.sub('', full, count=1).strip()
+    return short or full
+
+
+_SITE_BRAND_RE = re.compile(r'\s*[-–—:·|/]\s*(?:' + '|'.join(BRANDS) + r')\s*$', re.I)
+
+
+def short_site(name):
+    """Site name for titles: 'Bergzeit FR - Arc'teryx' -> 'Bergzeit FR' (the brand is implied by the feed)."""
+    full = ' '.join(str(name or '').split())
+    return _SITE_BRAND_RE.sub('', full).strip() or full
+
+
+def _price(p, value=None):
+    from .mail_templates import _money
+    v = p.get('sale_price') if value is None else value
+    return _money(v, p.get('currency')) if v not in (None, '') else ''
+
+
+def _key(event):
+    """Key number for the title: percentage change for price events."""
+    from .mail_templates import _pct
+    p = event['payload']['product']
+    old = event['payload'].get('old_price')
+    if event['kind'] in ('PRICE_DROP', 'PRICE_RISE') and old is not None:
+        pct = _pct(old, p.get('sale_price'))
+        return pct.replace('.0%', '%') if pct else ''
+    return ''
+
+
+def _expand(events):
+    out = []
+    for e in events:
+        if e.get('kind') == 'DIGEST': out.extend(_expand((e.get('payload') or {}).get('events') or []))
+        else: out.append(e)
+    return out
+
+
+def _title(event):
+    kind = KIND_SHORT[event['kind']]
+    key = _key(event)
+    head = f'{kind} {key}' if key else kind
+    return clamp(f"{head} · {short_name(event['payload']['product'].get('name'))}")
+
+
 def _line(site, event):
     if event['kind'] not in LABELS: return message(site, event).splitlines()[0]
     p = event['payload']['product']
-    price = f"{p.get('sale_price')} {p.get('currency') or ''}".strip()
     old = event['payload'].get('old_price')
-    return f"{LABELS[event['kind']]}：{p['name']} · {price}" + (f"（原 {old}）" if old is not None else '')
+    key = _key(event)
+    price = (f"{_price(p, old)} → {_price(p)}" if old is not None else _price(p))
+    head = KIND_SHORT[event['kind']] + (f' {key}' if key else '')
+    return f"{head} · {clamp(short_name(p.get('name')), 40)}" + (f' · {price}' if price else '')
+
+
+def _detail(site, event):
+    p = event['payload']['product']
+    old = event['payload'].get('old_price')
+    if old is not None: price = f"{_price(p, old)} → {_price(p)}"
+    else:
+        price = _price(p)
+        orig = p.get('original_price')
+        if price and orig not in (None, '') and str(orig) != str(p.get('sale_price')): price += f"（原价 {_price(p, orig)}）"
+    full = ' '.join(str(p.get('name') or '').split())
+    lines = [price] if price else []
+    lines.append(site.get('name') or '')
+    if '…' in _title(event) or short_name(full) != full: lines.append(full)
+    return '\n'.join(x for x in lines if x)
 
 
 def _http(u):
@@ -64,26 +142,30 @@ def _http(u):
 
 def tap_url(site, events):
     """URL opened when the push is tapped: the product page when exactly one product is involved, else the site URL."""
-    urls = {_http(((e.get('payload') or {}).get('product') or {}).get('url')) for e in events if e.get('kind') in LABELS}
+    urls = {_http(((e.get('payload') or {}).get('product') or {}).get('url')) for e in _expand(events) if e.get('kind') in LABELS}
     urls.discard('')
     return urls.pop() if len(urls) == 1 else _http(site.get('url'))
 
 
 def build(site, events):
-    """Return a provider-neutral notification dict for one or more events of a site."""
-    kinds = [e['kind'] for e in events]
-    if len(events) == 1:
-        title = (message(site, events[0]).splitlines()[0])[:120]
-        body = '\n'.join(message(site, events[0]).splitlines()[1:])
+    """Return a provider-neutral notification dict. Title is phone-sized: change type, key number, short product name."""
+    flat = _expand(events)
+    product = [e for e in flat if e.get('kind') in LABELS]
+    kinds = [e['kind'] for e in flat]
+    if len(flat) == 1 and product:
+        title, body = _title(flat[0]), _detail(site, flat[0])
+    elif len(flat) == 1:
+        lines = message(site, flat[0]).splitlines()
+        title, body = clamp(lines[0]), '\n'.join(lines[1:])
     else:
-        title = f"{site['name']}：{len(events)} 项商品变化"[:120]
-        lines = [_line(site, e) for e in events[:MAX_LINES]]
-        if len(events) > MAX_LINES: lines.append(f'…另有 {len(events) - MAX_LINES} 项，请在后台查看')
+        title = clamp(f"{len(flat)} 个变化 · {short_site(site.get('name'))}")
+        lines = [_line(site, e) for e in flat[:MAX_LINES]]
+        if len(flat) > MAX_LINES: lines.append(f'…另有 {len(flat) - MAX_LINES} 项，请在后台查看')
         body = '\n'.join(lines)
     url = tap_url(site, events)
     image = ''
-    if len(events) == 1 and events[0]['kind'] in LABELS:
-        i = str(events[0]['payload']['product'].get('image') or '')
+    if len(flat) == 1 and product:
+        i = str(flat[0]['payload']['product'].get('image') or '')
         image = i if urlsplit(i).scheme == 'https' else ''
     urgent = 'PRICE_DROP' in kinds
     return {'title': title, 'body': body[:3500], 'url': url, 'image': image, 'urgent': urgent,
